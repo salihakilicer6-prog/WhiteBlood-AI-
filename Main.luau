@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.7.0"
+Main.version = "v1.8.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -540,7 +540,36 @@ Modules["./Agent/Skill"] = function()
 	local FS = requireModule("./Core/FS")
 	local Skill = {}
 
+	-- Official Roblox Creator API Reference Knowledge Base
+	local robloxDocDatabase = {
+		workspace = "Workspace: Roblox oyun dünyasını ve 3D parçaları barındırır. Parçaları eklemek için Instance.new('Part') kullanın ve Parent = workspace yapın.",
+		players = "Players Servisi: Oyuncuları yönetir. LocalPlayer yalnızca LocalScript istemcisinde erişilebilirdir.",
+		lighting = "Lighting Servisi: Oyun içi aydınlatma, sis ve gökyüzü efektlerini (Atmosphere, Bloom, SunRays) yönetir. Doğrudan nokta erişimi yerine Lighting:FindFirstChildOfClass('Atmosphere') kullanın.",
+		tweenservice = "TweenService: Özellikleri yumuşak şekilde animasyonlandırır. Kullanımı: TweenService:Create(instance, TweenInfo.new(time), { Property = value }):Play()",
+		runservice = "RunService: Kare bazlı döngüler için IsStudio(), IsClient(), IsServer(), RenderStepped ve Heartbeat olaylarını sunar.",
+		userinputservice = "UserInputService: Klavye, fare, dokunmatik ve oyun kolu girdilerini dinlemek için istemci tarafında kullanılır.",
+		httpservice = "HttpService: JSONEncode, JSONDecode, GetAsync ve RequestAsync ile dış API isteklerini yönetir. Studio'da varsayılan olarak kapalıdır.",
+		replicatedstorage = "ReplicatedStorage: Hem Sunucu hem İstemci tarafından erişilebilen ModuleScript ve ortak nesneleri barındırır.",
+		serverscriptservice = "ServerScriptService: Yalnızca sunucu tarafında çalışan güvenlikli Script nesnelerini barındırır.",
+		startergui = "StarterGui: Oyuncu arayüzlerini (ScreenGui, Frame, TextLabel) depolar ve oyuna girince PlayerGui içine kopyalar.",
+		task = "task Kütüphanesi: task.wait(), task.spawn(), task.defer() ve task.delay() ile güvenli zamanlama sağlar. Eski wait() yerine task.wait() tercih edilmelidir.",
+	}
+
 	local defaultTools = {
+		{
+			type = "function",
+			["function"] = {
+				name = "search_roblox_docs",
+				description = "Roblox Creator Documentation ve API belgelerinden servis, sınıf, metod ve özellik arar.",
+				parameters = {
+					type = "object",
+					properties = {
+						query = { type = "string", description = "Aranacak Roblox servisi, sınıfı veya kavramı (örn. TweenService, Lighting, task, UserInputService)" },
+					},
+					required = { "query" },
+				},
+			},
+		},
 		{
 			type = "function",
 			["function"] = {
@@ -611,7 +640,16 @@ Modules["./Agent/Skill"] = function()
 	end
 
 	function Skill.executeTool(toolName, args)
-		if toolName == "create_part" then
+		if toolName == "search_roblox_docs" then
+			local query = (args and args.query or ""):lower()
+			for k, info in pairs(robloxDocDatabase) do
+				if query:find(k) or k:find(query) then
+					return true, "📖 Roblox Creator Dokümantasyon Sonucu:\n" .. info
+				end
+			end
+			return true, "📖 Roblox Creator Dokümantasyon:\nRoblox API Genel Bilgisi: Servislere her zaman game:GetService('ServisAdi') ile erişin. Nesne erişimlerinde FindFirstChild veya FindFirstChildOfClass tercih edin."
+
+		elseif toolName == "create_part" then
 			local ok, result = pcall(function()
 				local className = args.className or "Part"
 				local part = Instance.new(className)
@@ -696,6 +734,7 @@ Modules["./Agent/Skill"] = function()
 
 	function Skill.list()
 		return {
+			{ name = "search_roblox_docs", description = "Roblox Creator API dokümantasyonunu arar." },
 			{ name = "create_part", description = "Roblox Workspace objesi oluşturur." },
 			{ name = "run_luau", description = "Roblox Studio içinde Luau kodu çalıştırır." },
 			{ name = "read_file", description = "Dosya oku." },
@@ -722,7 +761,7 @@ Modules["./Agent/Agent"] = function()
 		local maxIterations = (opts and opts.maxToolIterations) or 8
 		local currentIteration = 0
 
-		local systemPrompt = "Sen WHITEBLOD AI asistanısın. Roblox Studio, Luau kodlama ve oyun geliştirme konularında uzmansın. Türkçe ve nazik bir dille yanıt ver. Roblox servislerinde doğrudan nokta erişimi yerine (örn. Lighting.Atmosphere) her zaman FindFirstChildOfClass veya FindFirstChild kullanın (örn. Lighting:FindFirstChildOfClass('Atmosphere') veya Lighting:FindFirstChild('Atmosphere'))."
+		local systemPrompt = "Sen WHITEBLOD AI asistanısın. Roblox Studio, Luau kodlama ve oyun geliştirme konularında uzmansın. Türkçe ve nazik bir dille yanıt ver.\n\nROBLOX MİMARİSİ VE KODLAMA KURALLARI:\n1. Luau Sözdizimi & Tipler: Katı tipler, task kütüphanesi (task.wait, task.spawn, task.defer) ve olay bağlantılarını (Connect) kullanın. Eski wait() kullanmayın.\n2. Servis Erişimi: Servislere her zaman game:GetService('ServisAdi') ile erişin (Workspace, Players, Lighting, ReplicatedStorage, ServerScriptService, StarterGui, RunService, TweenService, UserInputService, HttpService).\n3. Güvenli Nesne Erişimi: Doğrudan nokta erişimi yerine (örn. Lighting.Atmosphere) her zaman FindFirstChildOfClass veya FindFirstChild kullanın (örn. Lighting:FindFirstChildOfClass('Atmosphere')).\n4. İstemci-Sunucu Güvenliği:\n   - Sunucu kodları: Script (ServerScriptService veya Workspace)\n   - İstemci kodları: LocalScript (StarterPlayerScripts veya StarterGui)\n   - Ortak modüller: ModuleScript (ReplicatedStorage)\n5. Kod Önerileri: Kod verirken her zaman betiğin türünü, nereye konulacağını ve gerekli nesneleri adım adım açıklayın."
 
 		local hasSystem = false
 		for _, msg in ipairs(history) do
