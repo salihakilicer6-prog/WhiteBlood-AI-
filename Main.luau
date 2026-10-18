@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.5.0"
+Main.version = "v1.6.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -325,7 +325,7 @@ Modules["./AI/Provider"] = function()
 			if errStr:find("Http requests are not enabled") or errStr:find("HttpEnabled") then
 				return false, 0, "Roblox Studio Settings -> Security -> Allow HTTP Requests seçeneği kapalı! Lütfen HTTP isteklerine izin verin."
 			end
-			return false, 0, "HTTP Bağlantı Hatası: " .. errStr
+			return false, 0, "Ağ / Bağlantı Hatası: " .. errStr
 		end
 
 		local status = result.StatusCode or (result.Success and 200 or 500)
@@ -381,6 +381,8 @@ Modules["./AI/Provider"] = function()
 				errMsg = spec.name .. " Yetkilendirme Hatası [" .. tostring(status) .. "] (Geçersiz API Anahtarı)"
 			elseif status == 429 then
 				errMsg = spec.name .. " Kota / Hız Sınırı Aşıldı [429]"
+			elseif status >= 500 then
+				errMsg = spec.name .. " Sunucu Hatası [" .. tostring(status) .. "]"
 			end
 
 			if #body > 0 then
@@ -568,7 +570,7 @@ Modules["./Agent/Skill"] = function()
 			type = "function",
 			["function"] = {
 				name = "run_luau",
-				description = "Executes Luau code in Roblox Studio environment.",
+				description = "Executes Luau code in Roblox Studio environment safely.",
 				parameters = {
 					type = "object",
 					properties = {
@@ -655,11 +657,16 @@ Modules["./Agent/Skill"] = function()
 			if not fn then
 				return false, "Luau Sözdizimi Hatası: " .. tostring(syntaxErr)
 			end
+
 			local ok, execErr = pcall(fn)
 			if ok then
-				return true, "Luau kodu çalıştırıldı."
+				return true, "Luau kodu başarıyla çalıştırıldı."
 			else
-				return false, "Çalıştırma Hatası: " .. tostring(execErr)
+				local errStr = tostring(execErr)
+				if errStr:find("Atmosphere") and errStr:find("Lighting") then
+					errStr = "Lighting servisinde Atmosphere bulunamadı! Lütfen nokta erişimi (Lighting.Atmosphere) yerine Lighting:FindFirstChildOfClass('Atmosphere') kullanın veya bir Atmosphere nesnesi ekleyin."
+				end
+				return false, "Çalıştırma Hatası: " .. errStr
 			end
 
 		elseif toolName == "read_file" then
@@ -708,7 +715,7 @@ Modules["./Agent/Agent"] = function()
 		local maxIterations = (opts and opts.maxToolIterations) or 8
 		local currentIteration = 0
 
-		local systemPrompt = "Sen WHITEBLOD AI asistanısın. Roblox Studio, Luau kodlama ve oyun geliştirme konularında uzmansın. Türkçe ve nazik bir dille yanıt ver."
+		local systemPrompt = "Sen WHITEBLOD AI asistanısın. Roblox Studio, Luau kodlama ve oyun geliştirme konularında uzmansın. Türkçe ve nazik bir dille yanıt ver. Roblox servislerinde doğrudan nokta erişimi yerine (örn. Lighting.Atmosphere) her zaman FindFirstChildOfClass veya FindFirstChild kullanın (örn. Lighting:FindFirstChildOfClass('Atmosphere') veya Lighting:FindFirstChild('Atmosphere'))."
 
 		local hasSystem = false
 		for _, msg in ipairs(history) do
