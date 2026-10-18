@@ -393,8 +393,14 @@ Modules["./AI/Provider"] = function()
 			local errMsg = spec.name .. " Hatası [" .. tostring(status) .. "]"
 			if status == 400 then
 				errMsg = spec.name .. " İstek Hatası [400] (Geçersiz model veya parametre)"
-			elseif status == 401 or status == 403 then
-				errMsg = spec.name .. " Yetkilendirme Hatası [" .. tostring(status) .. "] (Geçersiz API Anahtarı)"
+			elseif status == 401 then
+				errMsg = spec.name .. " Yetkilendirme Hatası [401] (Geçersiz API Anahtarı)"
+			elseif status == 403 then
+				if provId == "bigpickle" then
+					errMsg = spec.name .. " İzin Hatası [403] (OpenCode Zen servisi harici bağlantılara kapalı veya yetkisiz istemci)"
+				else
+					errMsg = spec.name .. " Yetkilendirme Hatası [403] (Erişim Reddedildi / Geçersiz API Anahtarı)"
+				end
 			elseif status == 404 then
 				errMsg = spec.name .. " Model Bulunamadı [404] (Model Kimliği: '" .. tostring(modelName) .. "')"
 			elseif status == 429 then
@@ -777,7 +783,7 @@ Modules["./Agent/Agent"] = function()
 		local maxIterations = (opts and opts.maxToolIterations) or 8
 		local currentIteration = 0
 
-		local systemPrompt = "Sen WHITEBLOD AI asistanısın. Roblox Studio, Luau kodlama ve oyun geliştirme konularında uzmansın. Türkçe ve nazik bir dille yanıt ver.\n\nROBLOX MİMARİSİ VE KODLAMA KURALLARI:\n1. Luau Sözdizimi & Tipler: Katı tipler, task kütüphanesi (task.wait, task.spawn, task.defer) ve olay bağlantılarını (Connect) kullanın. Eski wait() kullanmayın.\n2. Servis Erişimi: Servislere her zaman game:GetService('ServisAdi') ile erişin (Workspace, Players, Lighting, ReplicatedStorage, ServerScriptService, StarterGui, RunService, TweenService, UserInputService, HttpService).\n3. Güvenli Nesne Erişimi: Doğrudan nokta erişimi yerine (örn. Lighting.Atmosphere) her zaman FindFirstChildOfClass veya FindFirstChild kullanın (örn. Lighting:FindFirstChildOfClass('Atmosphere')).\n4. İstemci-Sunucu Güvenliği:\n   - Sunucu kodları: Script (ServerScriptService veya Workspace)\n   - İstemci kodları: LocalScript (StarterPlayerScripts veya StarterGui)\n   - Ortak modüller: ModuleScript (ReplicatedStorage)\n5. Kod Önerileri: Kod verirken her zaman betiğin türünü, nereye konulacağını ve gerekli nesneleri adım adım açıklayın."
+		local systemPrompt = "Sen WHITEBLOD AI asistanısın. Roblox Studio, Luau kodlama ve mobil/PC oyun geliştirme konularında profesyonel uzmansın. Türkçe, doğrudan, çözüm odaklı ve net bir dille yanıt ver.\n\nKRİTİK DAVRANIŞ KURALLARI:\n1. Gereksiz Soru Sorma: Kullanıcı bir istekte bulunduğunda eksik bilgi kritik değilse gereksiz netleştirme soruları ('Nasıl yapayım?', 'Özel bir isteğiniz var mı?') SORMA. En iyi Roblox/Luau standartlarına uygun tam çalışan çözümü ve kodu DOĞRUDAN üret.\n2. Tam ve Eksiksiz Kod: Kod parçalarını yarım bırakma veya 'buraya kodunuzu ekleyin' yazma. Tam, kopyalayıp çalıştırılabilir Luau kodları sun.\n3. Kod Yerleşimi ve Tür Bilgisi: Kod verirken her zaman betiğin türünü ve tam konumunu belirt:\n   - Sunucu Kodları: Script -> ServerScriptService (veya Workspace)\n   - İstemci Kodları: LocalScript -> StarterPlayerScripts, StarterCharacterScripts veya StarterGui\n   - Paylaşımlı Modüller: ModuleScript -> ReplicatedStorage\n4. Güvenlik ve Ağ (Network): İstemci-Sunucu haberleşmesinde RemoteEvent/RemoteFunction kullan, sunucuda mutlaka yetki ve girdi doğrulaması yap (Exploit koruması).\n5. Mobil Uyumluluk: Kullanıcı arayüzü (UI) ve kontroller tasarlarken mobil dokunmatik ekranlar (TouchEnabled, DynamicThumbstick) ve ekran ölçekleme (UDim2.fromScale) uyumluluğunu gözet.\n6. Güvenli Luau Standardı:\n   - task kütüphanesini kullan (task.wait, task.spawn, task.defer). Eski wait()/spawn() KULLANMA.\n   - Servislere game:GetService('ServisAdi') ile eriş.\n   - Doğrudan nokta erişimi yerine güvenli arama yap (örn. Lighting:FindFirstChildOfClass('Atmosphere') veya WaitForChild)."
 
 		local hasSystem = false
 		for _, msg in ipairs(history) do
