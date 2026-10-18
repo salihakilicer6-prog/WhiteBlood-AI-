@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.3.0"
+Main.version = "v1.4.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -246,7 +246,6 @@ Modules["./AI/Provider"] = function()
 			if type(newConfig.models) == "table" then
 				for k, v in pairs(newConfig.models) do
 					if providerSpecs[k] and type(v) == "string" and #v > 0 then
-						-- Automatically migrate legacy models
 						if k == "gemini" and (v == "gemini-2.0-flash" or v == "gemini-1.5-flash" or v == "gemini-1.5-pro") then
 							v = "gemini-3.8-flash"
 						elseif k == "openrouter" and v == "google/gemini-2.0-flash-001" then
@@ -449,7 +448,6 @@ Modules["./AI/Provider"] = function()
 			return false, spec.name .. " için API Anahtarı girilmedi. Ayarlar sayfasından anahtarı ekleyin."
 		end
 
-		-- Live chat completion test payload
 		local ok, content, _, status = sendCompletionForProvider(prov, { { role = "user", content = "ping" } })
 		if ok then
 			local mName = config.models[prov] or spec.defaultModel
@@ -860,6 +858,7 @@ Modules["./UI/Ui"] = function()
 		f.BackgroundTransparency = props.transparency or (props.bg == "transparent" and 1 or 0)
 		f.BorderSizePixel = props.borderSize or 0
 		f.LayoutOrder = props.layoutOrder or 0
+		f.Active = props.active ~= false
 
 		if props.radius and props.radius > 0 then
 			Ui.new("UICorner", f, { CornerRadius = UDim.new(0, props.radius) })
@@ -897,6 +896,7 @@ Modules["./UI/Ui"] = function()
 		t.BackgroundTransparency = props.transparency or 1
 		t.TextWrapped = props.wraps or false
 		t.LayoutOrder = props.layoutOrder or 0
+		t.Active = false
 
 		if parent then t.Parent = parent end
 		return t
@@ -941,6 +941,7 @@ Modules["./UI/Components"] = function()
 		btn.Position = (opts and opts.position) or UDim2.fromOffset(0, 0)
 		btn.LayoutOrder = (opts and opts.layoutOrder) or 0
 		btn.AutoButtonColor = true
+		btn.Active = true
 
 		Ui.new("UICorner", btn, { CornerRadius = UDim.new(0, Theme.sizes.radius) })
 
@@ -977,6 +978,7 @@ Modules["./UI/Components"] = function()
 		box.BackgroundTransparency = 1
 		box.Size = UDim2.new(1, -16, 1, 0)
 		box.Position = UDim2.fromOffset(8, 0)
+		box.Active = true
 		box.Parent = container
 
 		if opts and opts.onChanged then
@@ -1000,6 +1002,7 @@ Modules["./UI/Components"] = function()
 		sc.ScrollBarImageColor3 = Theme.color((opts and opts.scrollbarColor) or "accentDim")
 		sc.CanvasSize = UDim2.new(0, 0, 0, 0)
 		sc.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		sc.Active = true
 
 		if parent then sc.Parent = parent end
 		return sc
@@ -1059,6 +1062,7 @@ Modules["./UI/Window"] = function()
 			bg = "bg",
 			borderColor = "border",
 			radius = Theme.sizes.radius,
+			active = true,
 		})
 
 		local topBar = Ui.frame(mainContainer, {
@@ -1066,6 +1070,7 @@ Modules["./UI/Window"] = function()
 			size = UDim2.new(1, 0, 0, Theme.sizes.topBarHeight),
 			bg = "bg2",
 			borderColor = "border",
+			active = true,
 		})
 
 		Ui.text(topBar, {
@@ -1090,7 +1095,7 @@ Modules["./UI/Window"] = function()
 			end,
 		})
 
-		-- Touch & Mouse Dragging Logic with Viewport Clamping
+		-- Touch & Mouse Dragging Logic on topBar with Screen Bounds Clamping
 		local connections = {}
 		local dragging = false
 		local dragStart = Vector3.new(0, 0, 0)
@@ -1106,14 +1111,14 @@ Modules["./UI/Window"] = function()
 					dragStart = input.Position
 					startPos = mainContainer.Position
 
-					local conn
-					conn = input.Changed:Connect(function()
-						if input.UserInputState == Enum.UserInputState.End then
+					local connEnd
+					connEnd = UserInputService.InputEnded:Connect(function(endedInput)
+						if endedInput.UserInputType == input.UserInputType then
 							dragging = false
-							if conn then conn:Disconnect() end
+							if connEnd then connEnd:Disconnect() end
 						end
 					end)
-					table.insert(connections, conn)
+					table.insert(connections, connEnd)
 				end
 			end))
 
@@ -1123,7 +1128,6 @@ Modules["./UI/Window"] = function()
 					local newX = startPos.X.Offset + delta.X
 					local newY = startPos.Y.Offset + delta.Y
 
-					-- Clamp window position inside viewport bounds so it never gets lost off-screen
 					local vw, vh = Device.viewportSize()
 					local maxX = math.max(0, vw - mainContainer.AbsoluteSize.X)
 					local maxY = math.max(0, vh - mainContainer.AbsoluteSize.Y)
@@ -1141,6 +1145,7 @@ Modules["./UI/Window"] = function()
 			size = UDim2.new(1, 0, 1, -Theme.sizes.topBarHeight),
 			position = UDim2.fromOffset(0, Theme.sizes.topBarHeight),
 			bg = "transparent",
+			active = true,
 		})
 
 		return {
