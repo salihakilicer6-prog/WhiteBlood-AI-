@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.9.0"
+Main.version = "v1.10.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -197,8 +197,8 @@ Modules["./AI/Provider"] = function()
 		groq = {
 			name = "Groq",
 			baseUrl = "https://api.groq.com/openai/v1",
-			defaultModel = "llama-3.3-70b-versatile",
-			models = { "llama-3.3-70b-versatile", "llama-3.1-80b-instant", "mixtral-8x7b-32768" },
+			defaultModel = "openai/gpt-oss-120b",
+			models = { "openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-80b-instant", "mixtral-8x7b-32768" },
 		},
 		openrouter = {
 			name = "OpenRouter",
@@ -218,7 +218,7 @@ Modules["./AI/Provider"] = function()
 		activeProvider = "auto", -- auto, gemini, groq, openrouter, bigpickle
 		models = {
 			gemini = "gemini-3.8-flash",
-			groq = "llama-3.3-70b-versatile",
+			groq = "openai/gpt-oss-120b",
 			openrouter = "google/gemini-3.8-flash",
 			bigpickle = "big-pickle",
 		},
@@ -254,10 +254,13 @@ Modules["./AI/Provider"] = function()
 			if type(newConfig.models) == "table" then
 				for k, v in pairs(newConfig.models) do
 					if providerSpecs[k] and type(v) == "string" and #v > 0 then
+						-- Automatically migrate legacy models
 						if k == "gemini" and (v == "gemini-2.0-flash" or v == "gemini-1.5-flash" or v == "gemini-1.5-pro") then
 							v = "gemini-3.8-flash"
 						elseif k == "openrouter" and v == "google/gemini-2.0-flash-001" then
 							v = "google/gemini-3.8-flash"
+						elseif k == "groq" and v == "llama-3.3-70b-versatile" then
+							v = "openai/gpt-oss-120b"
 						end
 						config.models[k] = v
 					end
@@ -392,6 +395,8 @@ Modules["./AI/Provider"] = function()
 				errMsg = spec.name .. " İstek Hatası [400] (Geçersiz model veya parametre)"
 			elseif status == 401 or status == 403 then
 				errMsg = spec.name .. " Yetkilendirme Hatası [" .. tostring(status) .. "] (Geçersiz API Anahtarı)"
+			elseif status == 404 then
+				errMsg = spec.name .. " Model Bulunamadı [404] (Model Kimliği: '" .. tostring(modelName) .. "')"
 			elseif status == 429 then
 				errMsg = spec.name .. " Kota / Hız Sınırı Aşıldı [429]"
 			elseif status >= 500 then
@@ -401,7 +406,7 @@ Modules["./AI/Provider"] = function()
 			if #body > 0 then
 				local okDec, dec = pcall(JSON.decode, body)
 				if okDec and type(dec) == "table" and dec.error and dec.error.message then
-					errMsg = spec.name .. " API Hatası: " .. tostring(dec.error.message)
+					errMsg = errMsg .. " - API Mesajı: " .. tostring(dec.error.message)
 				end
 			end
 			return false, errMsg, nil, status
@@ -1837,7 +1842,7 @@ function Main.start(parent, opts)
 	-- ---- Create Views ----
 	local chat = ChatView.create(viewHost, {
 		placeholder = "WHITEBLOD AI'a komut veya soru yazın...",
-		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nDesteklenen AI Sağlayıcıları: Google Gemini, Groq, OpenRouter, Big Pickle (OpenCode Zen).\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
+		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nDesteklenen AI Sağlayıcıları: Google Gemini (gemini-3.8-flash), Groq, OpenRouter, Big Pickle (OpenCode Zen).\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
 	})
 	views.chat = chat
 
