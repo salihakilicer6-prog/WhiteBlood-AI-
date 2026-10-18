@@ -708,9 +708,20 @@ Modules["./Agent/Skill"] = function()
 
 		elseif toolName == "run_luau" then
 			local code = args.code or ""
-			local fn, syntaxErr = loadstring(code)
-			if not fn then
-				return false, "Luau Sözdizimi Hatası: " .. tostring(syntaxErr)
+			local g = (getgenv and getgenv()) or _G or {}
+			local loadFunc = (typeof(g.loadstring) == "function" and g.loadstring) or (typeof(loadstring) == "function" and loadstring) or nil
+			if not loadFunc then
+				local okRaw, rawLoad = pcall(function() return rawget(getfenv(), "loadstring") end)
+				if okRaw and typeof(rawLoad) == "function" then loadFunc = rawLoad end
+			end
+
+			if not loadFunc then
+				return false, "Kod Çalıştırma Hatası: Çalışma zamanı ortamında 'loadstring' işlevi bulunamadı veya devredışı."
+			end
+
+			local okLoad, fn, syntaxErr = pcall(loadFunc, code)
+			if not okLoad or not fn then
+				return false, "Luau Sözdizimi / Yükleme Hatası: " .. tostring(syntaxErr or fn)
 			end
 
 			-- Safe Service & Atmosphere check before running
@@ -1358,12 +1369,15 @@ Modules["./UI/Views/Chat"] = function()
 				wraps = true,
 			})
 
-			label:GetPropertyChangedSignal("TextBounds"):Connect(function()
+			local function updateBubbleSize()
 				local bounds = label.TextBounds
 				label.Size = UDim2.new(1, -20, 0, math.max(20, bounds.Y))
 				bubble.Size = UDim2.new(1, 0, 0, bounds.Y + 16)
 				scroll.CanvasPosition = Vector2.new(0, scroll.AbsoluteCanvasSize.Y)
-			end)
+			end
+
+			label:GetPropertyChangedSignal("TextBounds"):Connect(updateBubbleSize)
+			updateBubbleSize()
 
 			if role == "assistant" then api.currentAssistantLabel = label end
 			scroll.CanvasPosition = Vector2.new(0, scroll.AbsoluteCanvasSize.Y)
@@ -1482,59 +1496,376 @@ Modules["./UI/Views/Editor"] = function()
 	local Ui = requireModule("./UI/Ui")
 	local Components = requireModule("./UI/Components")
 	local FS = requireModule("./Core/FS")
+	local Provider = requireModule("./AI/Provider")
 	local EditorView = {}
+
+	-- Helper to detect clipboard support
+	local function getClipboardFunction()
+		local g = (getgenv and getgenv()) or _G or {}
+		if typeof(g.setclipboard) == "function" then return g.setclipboard end
+		if typeof(g.toclipboard) == "function" then return g.toclipboard end
+		local okRaw, rawSet = pcall(function() return rawget(getfenv(), "setclipboard") end)
+		if okRaw and typeof(rawSet) == "function" then return rawSet end
+		return nil
+	end
+
+	-- Helper to strip code blocks
+	local function cleanCodeBlock(text)
+		if not text then return "" end
+		local code = text:match("```%w*%s*\n?(.-)\n?```")
+		if code and #code > 0 then
+			return code
+		end
+		return text
+	end
 
 	function EditorView.create(parent, opts)
 		local root = Ui.frame(parent, { name = "EditorView", size = Ui.full(), bg = "transparent" })
+		local isModified = false
+		local confirmClearState = false
+		local confirmLoadState = false
 
-		local topRow = Ui.frame(root, {
-			name = "EditorTopRow",
-			size = UDim2.new(1, -20, 0, 36),
-			position = UDim2.fromOffset(10, 10),
+		-- Main vertical layout container
+		local topContainer = Ui.frame(root, {
+			name = "EditorTopContainer",
+			size = UDim2.new(1, -20, 0, 118),
+			position = UDim2.fromOffset(10, 8),
 			bg = "transparent",
 		})
 
-		local titleLabel = Ui.text(topRow, {
-			text = opts and opts.fileName or "untitled.luau",
-			fg = "accent",
-			textSize = Theme.sizes.fontSize,
-			font = "bold",
-			alignX = Enum.TextXAlignment.Left,
-			size = UDim2.new(0.6, 0, 1, 0),
+		-- Row 1: Path Input & File Operations (Load, Save, Copy, Clear)
+		local row1 = Ui.frame(topContainer, {
+			name = "Row1",
+			size = UDim2.new(1, 0, 0, 32),
+			position = UDim2.fromOffset(0, 0),
+			bg = "transparent",
 		})
 
-		local saveBtn = Components.button(topRow, {
+		local pathBox = Components.textInput(row1, {
+			placeholder = "whiteblood/script.luau",
+			size = UDim2.new(1, -250, 1, 0),
+			position = UDim2.fromOffset(0, 0),
+		})
+		pathBox.box.Text = "whiteblood/script.luau"
+
+		local loadBtn = Components.button(row1, {
+			text = "Yükle",
+			size = UDim2.fromOffset(55, 32),
+			position = UDim2.new(1, -245, 0, 0),
+			bg = "bg3",
+		})
+
+		local saveBtn = Components.button(row1, {
 			text = "Kaydet",
-			size = UDim2.fromOffset(80, 36),
-			position = UDim2.fromOffset(1, -80, 0, 0),
+			size = UDim2.fromOffset(55, 32),
+			position = UDim2.new(1, -185, 0, 0),
 			bg = "accent",
 			textColor = "bg",
 		})
 
-		local input = Components.textInput(root, {
-			placeholder = "-- Luau kodunuzu buraya yazın...",
-			size = UDim2.new(1, -20, 1, -66),
-			position = UDim2.fromOffset(10, 56),
+		local copyBtn = Components.button(row1, {
+			text = "Kopyala",
+			size = UDim2.fromOffset(60, 32),
+			position = UDim2.new(1, -125, 0, 0),
+			bg = "bg3",
+		})
+
+		local clearBtn = Components.button(row1, {
+			text = "Temizle",
+			size = UDim2.fromOffset(60, 32),
+			position = UDim2.new(1, -60, 0, 0),
+			bg = "bg3",
+			textColor = "textDim",
+		})
+
+		-- Row 2: AI Prompt Bar & AI Action Buttons (Üret, Düzelt, Açıkla)
+		local row2 = Ui.frame(topContainer, {
+			name = "Row2",
+			size = UDim2.new(1, 0, 0, 32),
+			position = UDim2.fromOffset(0, 38),
+			bg = "transparent",
+		})
+
+		local promptBox = Components.textInput(row2, {
+			placeholder = "AI talimatı yazın (örn: Para toplama ve liderlik tablosu yaz)...",
+			size = UDim2.new(1, -220, 1, 0),
+			position = UDim2.fromOffset(0, 0),
+		})
+
+		local genBtn = Components.button(row2, {
+			text = "⚡ Üret",
+			size = UDim2.fromOffset(65, 32),
+			position = UDim2.new(1, -215, 0, 0),
+			bg = "accent",
+			textColor = "bg",
+		})
+
+		local refactorBtn = Components.button(row2, {
+			text = "🔧 Düzelt",
+			size = UDim2.fromOffset(70, 32),
+			position = UDim2.new(1, -145, 0, 0),
+			bg = "bg3",
+		})
+
+		local explainBtn = Components.button(row2, {
+			text = "📖 Açıkla",
+			size = UDim2.fromOffset(70, 32),
+			position = UDim2.new(1, -70, 0, 0),
+			bg = "bg3",
+		})
+
+		-- Row 3: Status Banner
+		local statusRow = Ui.frame(topContainer, {
+			name = "StatusRow",
+			size = UDim2.new(1, 0, 0, 24),
+			position = UDim2.fromOffset(0, 76),
+			bg = "bg2",
+			radius = Theme.sizes.radius,
+		})
+
+		local statusText = Ui.text(statusRow, {
+			text = "Hazır - Luau kodunuzu düzenleyebilir veya AI ile kod üretebilirsiniz.",
+			fg = "textDim",
+			textSize = Theme.sizes.fontSizeSmall,
+			alignX = Enum.TextXAlignment.Left,
+			position = UDim2.fromOffset(8, 0),
+			size = UDim2.new(1, -16, 1, 0),
+		})
+
+		local function setStatus(msg, statusType)
+			statusText.Text = msg
+			if statusType == "success" then
+				statusText.TextColor3 = Theme.color("accent")
+			elseif statusType == "error" then
+				statusText.TextColor3 = Color3.fromRGB(255, 85, 85)
+			elseif statusType == "loading" then
+				statusText.TextColor3 = Color3.fromRGB(255, 215, 0)
+			else
+				statusText.TextColor3 = Theme.color("textDim")
+			end
+		end
+
+		-- Main Code Editor Input Area
+		local editorContainer = Components.textInput(root, {
+			placeholder = "-- Luau kodunuz buraya gelecek...",
+			size = UDim2.new(1, -20, 1, -138),
+			position = UDim2.fromOffset(10, 114),
 			multiLine = true,
 		})
 
-		local api = { root = root, currentPath = "whiteblood/untitled.luau" }
+		local codeBox = editorContainer.box
+		codeBox.Font = Enum.Font.Code
 
+		codeBox:GetPropertyChangedSignal("Text"):Connect(function()
+			isModified = true
+			confirmClearState = false
+			confirmLoadState = false
+		end)
+
+		-- Selectable Text Modal Overlay for Clipboard Fallback
+		local copyModal = Ui.frame(root, {
+			name = "CopyModalOverlay",
+			size = Ui.full(),
+			position = UDim2.fromOffset(0, 0),
+			bg = "bg",
+			visible = false,
+			zIndex = 10,
+		})
+
+		local copyModalBoxContainer = Ui.frame(copyModal, {
+			name = "CopyModalBox",
+			size = UDim2.new(1, -20, 1, -80),
+			position = UDim2.fromOffset(10, 10),
+			bg = "bg2",
+			borderColor = "accent",
+			radius = Theme.sizes.radius,
+		})
+
+		local copyModalTitle = Ui.text(copyModalBoxContainer, {
+			text = "⚠️ Executor Pano İletimi Desteklemiyor - Kodu Buradan Seçebilirsiniz:",
+			fg = "accent",
+			textSize = Theme.sizes.fontSizeSmall,
+			font = "bold",
+			alignX = Enum.TextXAlignment.Left,
+			position = UDim2.fromOffset(10, 6),
+			size = UDim2.new(1, -20, 0, 20),
+		})
+
+		local copyModalText = Instance.new("TextBox")
+		copyModalText.Name = "CopyModalTextBox"
+		copyModalText.Size = UDim2.new(1, -20, 1, -36)
+		copyModalText.Position = UDim2.fromOffset(10, 28)
+		copyModalText.BackgroundTransparency = 1
+		copyModalText.TextColor3 = Theme.color("text")
+		copyModalText.TextSize = Theme.sizes.fontSizeSmall
+		copyModalText.Font = Enum.Font.Code
+		copyModalText.MultiLine = true
+		copyModalText.TextWrapped = true
+		copyModalText.ClearTextOnFocus = false
+		copyModalText.TextEditable = false
+		copyModalText.Parent = copyModalBoxContainer
+
+		local closeCopyModalBtn = Components.button(copyModal, {
+			text = "Kapat",
+			size = UDim2.new(1, -20, 0, 36),
+			position = UDim2.new(0, 10, 1, -46),
+			bg = "accent",
+			textColor = "bg",
+		})
+
+		closeCopyModalBtn.Activated:Connect(function()
+			copyModal.Visible = false
+		end)
+
+		-- File Operation Events
 		saveBtn.Activated:Connect(function()
-			local content = input.box.Text
-			if api.currentPath then
-				FS.write(api.currentPath, content)
-				if opts and opts.onSaved then opts.onSaved() end
+			local path = pathBox.box.Text
+			if not path or #path == 0 then
+				setStatus("❌ Lütfen geçerli bir dosya yolu girin!", "error")
+				return
+			end
+			local content = codeBox.Text
+			local ok = FS.write(path, content)
+			isModified = false
+			confirmClearState = false
+			confirmLoadState = false
+
+			local hasExecFS = false
+			pcall(function()
+				local g = (getgenv and getgenv()) or _G or {}
+				hasExecFS = (typeof(g.writefile) == "function")
+			end)
+
+			if hasExecFS then
+				setStatus("✅ Dosya başarıyla kaydedildi: " .. path, "success")
+			else
+				setStatus("ℹ️ Hafızaya kaydedildi (Executor dosya sistemi erişimi yok)", "success")
 			end
 		end)
 
+		loadBtn.Activated:Connect(function()
+			local path = pathBox.box.Text
+			if not path or #path == 0 then
+				setStatus("❌ Lütfen yüklemek için dosya yolu girin!", "error")
+				return
+			end
+
+			if isModified and #codeBox.Text > 0 and not confirmLoadState then
+				confirmLoadState = true
+				setStatus("⚠️ Değişiklikler kaybolacak! Yüklemek için tekrar 'Yükle' butonuna basın.", "error")
+				return
+			end
+
+			confirmLoadState = false
+			if FS.exists(path) then
+				local content = FS.read(path)
+				codeBox.Text = content
+				isModified = false
+				setStatus("✅ Dosya başarıyla yüklendi: " .. path, "success")
+			else
+				setStatus("❌ Dosya bulunamadı: " .. path, "error")
+			end
+		end)
+
+		clearBtn.Activated:Connect(function()
+			if #codeBox.Text == 0 then return end
+			if isModified and not confirmClearState then
+				confirmClearState = true
+				setStatus("⚠️ Silmek istediğinizden emin misiniz? Onaylamak için tekrar basınız.", "error")
+				return
+			end
+			confirmClearState = false
+			codeBox.Text = ""
+			isModified = false
+			setStatus("Kodu temizlediniz.", "neutral")
+		end)
+
+		copyBtn.Activated:Connect(function()
+			local text = codeBox.Text
+			if not text or #text == 0 then
+				setStatus("❌ Kopyalanacak kod yok!", "error")
+				return
+			end
+
+			local clipFunc = getClipboardFunction()
+			if clipFunc then
+				local okErr = pcall(clipFunc, text)
+				if okErr then
+					setStatus("✅ Kod panoya kopyalandı!", "success")
+					return
+				end
+			end
+
+			-- Fallback: Display selectable text overlay
+			copyModalText.Text = text
+			copyModal.Visible = true
+			setStatus("⚠️ Executor pano işlevini desteklemiyor. Metin seçim penceresi açıldı.", "error")
+		end)
+
+		-- AI Action Handlers
+		local function runAiTask(taskType)
+			local userPrompt = promptBox.box.Text
+			local currentCode = codeBox.Text
+
+			if taskType == "generate" and (#userPrompt == 0) then
+				setStatus("❌ Lütfen AI için bir kod üretme talimatı girin!", "error")
+				return
+			end
+
+			if (taskType == "refactor" or taskType == "explain") and (#currentCode == 0) then
+				setStatus("❌ Düzenlenecek veya açıklanacak kod bulunamadı!", "error")
+				return
+			end
+
+			setStatus("⏳ AI yanıtı işleniyor, lütfen bekleyin...", "loading")
+
+			local messages = {}
+			if taskType == "generate" then
+				table.insert(messages, { role = "system", content = "Sen profesyonel Roblox Luau kod yazarısın. Kullanıcı isteğine uygun kopyalayıp çalıştırılabilir TAM Luau kodu üret. Kod blokları kullan." })
+				table.insert(messages, { role = "user", content = userPrompt })
+			elseif taskType == "refactor" then
+				table.insert(messages, { role = "system", content = "Sen profesyonel Roblox Luau optimizasyon ve hata düzeltme uzmanısın. Verilen Luau kodunu incele, hataları düzelt, performansını artır ve tam Luau kodunu ver." })
+				local fullContent = "Mevcut Kod:\n```luau\n" .. currentCode .. "\n```\n"
+				if #userPrompt > 0 then
+					fullContent = fullContent .. "Ek İstek: " .. userPrompt
+				end
+				table.insert(messages, { role = "user", content = fullContent })
+			elseif taskType == "explain" then
+				table.insert(messages, { role = "system", content = "Sen Roblox Luau eğitmenisin. Verilen Luau kodunun ne işe yaradığını, nasıl çalıştığını ve nereye konulacağını adım adım Türkçe olarak açıkla." })
+				table.insert(messages, { role = "user", content = "Aşağıdaki kodu açıkla:\n```luau\n" .. currentCode .. "\n```" })
+			end
+
+			task.spawn(function()
+				local ok, content, toolCalls = Provider.chatCompletion(messages, nil)
+				if ok and content then
+					if taskType == "explain" then
+						setStatus("✅ Açıklama tamamlandı! Detaylar ekrana yansıtıldı.", "success")
+						codeBox.Text = currentCode .. "\n\n--[[ AI AÇIKLAMASI:\n" .. content .. "\n--]]"
+					else
+						local extracted = cleanCodeBlock(content)
+						codeBox.Text = extracted
+						isModified = true
+						setStatus("✅ AI Luau kodu başarıyla üretildi!", "success")
+					end
+				else
+					setStatus("❌ AI Hatası: " .. tostring(content or "Bilinmeyen hata"), "error")
+				end
+			end)
+		end
+
+		genBtn.Activated:Connect(function() runAiTask("generate") end)
+		refactorBtn.Activated:Connect(function() runAiTask("refactor") end)
+		explainBtn.Activated:Connect(function() runAiTask("explain") end)
+
+		local api = { root = root, currentPath = "whiteblood/script.luau" }
+
 		function api.load(path)
 			api.currentPath = path
-			titleLabel.Text = path:match("([^/]+)$") or path
+			pathBox.box.Text = path
 			if FS.exists(path) then
-				input.box.Text = FS.read(path)
-			else
-				input.box.Text = ""
+				codeBox.Text = FS.read(path)
+				isModified = false
+				setStatus("✅ Yüklendi: " .. path, "success")
 			end
 		end
 
