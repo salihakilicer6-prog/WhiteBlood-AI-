@@ -1,0 +1,531 @@
+--!strict
+-- Main.luau
+-- OpenCodeLuau bootstrap: builds the macOS window, sidebar navigation,
+-- view switching, and wires the AI agent + skills into the chat view.
+--
+-- Load in an executor with:
+--   loadstring(game:HttpGet("https://<your-host>/OpenCodeLuau.luau"))()
+--
+-- No emojis anywhere; icons come from embedded SVG->PNG assets.
+
+local Theme = require("./UI/Theme")
+local Ui = require("./UI/Ui")
+local Components = require("./UI/Components")
+local Window = require("./UI/Window")
+local Markdown = require("./UI/Markdown")
+local ChatView = require("./UI/Views/Chat")
+local ConsoleView = require("./UI/Views/Console")
+local FilesView = require("./UI/Views/Files")
+local EditorView = require("./UI/Views/Editor")
+local SettingsView = require("./UI/Views/Settings")
+
+local Agent = require("./Agent/Agent")
+local Skill = require("./Agent/Skill")
+local Session = require("./Agent/Session")
+local Provider = require("./AI/Provider")
+local FS = require("./Core/FS")
+local JSON = require("./Core/JSON")
+local Device = require("./Core/Device")
+local Glass = require("./Core/Glass")
+
+local Main = {}
+
+Main.version = "v0.3.5"
+
+local NAV = {
+	{ id = "chat", name = "Chat", icon = "chat" },
+	{ id = "console", name = "Console", icon = "terminal" },
+	{ id = "files", name = "Files", icon = "folder" },
+	{ id = "editor", name = "Editor", icon = "edit" },
+	{ id = "skills", name = "Skills", icon = "sparkles" },
+	{ id = "settings", name = "Settings", icon = "gear" },
+}
+
+local makeSkillsView: (Instance, { any }) -> any
+
+function Main.start(parent: Instance?, opts: { any }?)
+	opts = opts or {}
+
+	-- Compact mode: phones (touch / small viewport) get an icon-only sidebar
+	-- and a near-fullscreen window. Tests can force it via opts.compact.
+	local compact = opts.compact
+	if compact == nil then
+		compact = Device.isCompact()
+	end
+	Theme.configure(compact)
+
+	-- Load persisted config (baseUrl/apiKey/model).
+	local persisted = {}
+	local ok, raw = pcall(FS.read, "opencode/config.json")
+	if ok and raw and #raw > 0 then
+		local ok2, parsed = pcall(JSON.decode, raw)
+		if ok2 and type(parsed) == "table" then
+			persisted = parsed
+		end
+	end
+	Provider.setConfig(persisted)
+
+	-- Persisted UI scale (percent-based) so low-DPI screens stay usable.
+	if type(persisted.uiScale) == "number" and persisted.uiScale > 0 then
+		Theme.setUIScale(persisted.uiScale)
+	end
+
+	-- Liquid glass: blur the scene behind the translucent panels. Disable with
+	-- opts.glass = false (also reverts panels to the solid look).
+	local glassOn = opts.glass ~= false
+	Theme.setGlass(glassOn)
+	Glass.setEnabled(glassOn, Theme.glass.blur)
+
+	-- Window: on compact, fill the viewport with a small margin instead of
+	-- using the desktop default size.
+	local width = opts.width
+	local height = opts.height
+	local winX, winY = opts.x, opts.y
+	if compact then
+		local vw, vh = Device.viewportSize()
+		if vw and vh then
+			width = math.min(width or (vw - 16), vw - 16)
+			height = math.min(height or (vh - 16), vh - 16)
+			if winX == nil then
+				winX = math.max(0, (vw - width) / 2)
+			end
+			if winY == nil then
+				winY = math.max(0, (vh - height) / 2)
+			end
+		end
+	end
+
+	local win = Window.create(parent, {
+		title = "OpenCodeLuau",
+		width = width or 720,
+		height = height or 520,
+		x = winX,
+		y = winY,
+		onClose = function()
+			Glass.setEnabled(false)
+			win.destroy()
+		end,
+	})
+
+	-- Layout: sidebar + main area. Both translucent glass so the blurred scene
+	-- bleeds through; solid when opts.glass = false.
+	local sidebar = Ui.glass(win.Content, {
+		name = "Sidebar",
+		size = UDim2.fromOffset(Theme.sizes.sidebarWidth, 1),
+		position = UDim2.fromOffset(0, 0),
+		glassDepth = 1,
+	})
+
+	local brandBlockHeight = 0
+	if not compact then
+		Ui.text(sidebar, {
+			name = "Brand",
+			text = "OpenCode",
+			fg = "text",
+			textSize = 18,
+			font = "bold",
+			position = UDim2.fromOffset(Theme.sizes.padding, Theme.sizes.padding),
+			size = UDim2.new(1, -2 * Theme.sizes.padding, 0, 26),
+			transparency = 1,
+		})
+		Ui.text(sidebar, {
+			name = "BrandSub",
+			text = "Luau agent in Roblox",
+			fg = "textFaint",
+			textSize = Theme.sizes.fontSizeSmall,
+			position = UDim2.fromOffset(Theme.sizes.padding, Theme.sizes.padding + 24),
+			size = UDim2.new(1, -2 * Theme.sizes.padding, 0, 18),
+			transparency = 1,
+		})
+		brandBlockHeight = 84
+	end
+
+	local navList = Ui.frame(sidebar, {
+		name = "Nav",
+		size = UDim2.new(1, 0, 1, -(brandBlockHeight + 34)),
+		position = UDim2.new(0, 0, 0, brandBlockHeight),
+		bg = "transparent",
+		borderSize = 0,
+	})
+	Ui.listLayoutVertical(navList, 4, 0)
+	Ui.new("UIPadding", navList, {
+		PaddingLeft = UDim.new(0, Theme.sizes.padding),
+		PaddingRight = UDim.new(0, Theme.sizes.padding),
+		PaddingTop = UDim.new(0, 4),
+	})
+
+	-- Version + session footer pinned to the sidebar bottom.
+	Ui.text(sidebar, {
+		name = "VersionFoot",
+		text = "OpenCode " .. (Main.version or "v0.3.5"),
+		fg = "textFaint",
+		textSize = Theme.sizes.fontSizeSmall,
+		font = "mono",
+		position = UDim2.new(0, Theme.sizes.padding, 1, -22),
+		size = UDim2.new(1, -2 * Theme.sizes.padding, 0, 18),
+		alignX = Enum.TextXAlignment.Left,
+		transparency = 1,
+	})
+
+	local mainArea = Ui.glass(win.Content, {
+		name = "Main",
+		size = UDim2.new(1, -Theme.sizes.sidebarWidth, 1, 0),
+		position = UDim2.fromOffset(Theme.sizes.sidebarWidth, 0),
+		glassDepth = 0,
+	})
+
+	-- View container; only one view visible at a time.
+	local viewHost = Ui.frame(mainArea, {
+		name = "ViewHost",
+		size = Ui.full(),
+		bg = "transparent",
+		borderSize = 0,
+	})
+
+	local navButtons: { [string]: TextButton } = {}
+	local navAccents: { [string]: Frame } = {}
+	local activeView = "chat"
+
+	local views: { [string]: any } = {}
+	local function refreshNav()
+		for _, item in ipairs(NAV) do
+			local sel = item.id == activeView
+			local btn = navButtons[item.id]
+			if btn then
+				btn.BackgroundColor3 = sel and Theme.color("accentDim") or Theme.color("transparent")
+				btn.BackgroundTransparency = sel and 0.55 or 1
+				btn.TextColor3 = sel and Theme.color("text") or Theme.color("textDim")
+			end
+			local accent = navAccents[item.id]
+			if accent then
+				accent.BackgroundTransparency = sel and 0 or 1
+			end
+		end
+	end
+	local function showView(id: string)
+		activeView = id
+		refreshNav()
+		-- Fade between views so switching feels like a smooth app transition.
+		for _, v in pairs(views) do
+			if v.root then
+				local showSel = v.root == (views[id] and views[id].root)
+				if showSel and opts.transitions ~= false then
+					pcall(function()
+						v.root.GroupTransparency = 1
+						TweenService:Create(v.root, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+							GroupTransparency = 0,
+						}):Play()
+					end)
+				end
+				v.root.Visible = showSel
+				if showSel and v.onShow then
+					pcall(v.onShow)
+				end
+			end
+		end
+	end
+
+	-- Build nav buttons (text + icon + left accent strip for the active item).
+	for idx, item in ipairs(NAV) do
+		local btn = Components.button(navList, {
+			text = item.name,
+			icon = item.icon,
+			iconOnly = compact,
+			size = UDim2.new(1, 0, 0, Theme.sizes.buttonHeight + (compact and 8 or 0)),
+			layoutOrder = idx,
+			bg = "transparent",
+			hoverColor = "bg3",
+			onClick = function()
+				showView(item.id)
+			end,
+		})
+		navButtons[item.id] = btn
+		local accent = Ui.frame(btn, {
+			name = "Accent",
+			size = UDim2.new(0, 3, 0.6, 0),
+			position = UDim2.new(0, 0, 0.2, 0),
+			bg = "accent",
+			borderSize = 0,
+			radius = 2,
+		})
+		navAccents[item.id] = accent
+	end
+
+	-- ---- Views ----
+	-- Each view has its own root filling the host; showView toggles visibility.
+	-- `editor` forward-declared so filesView.onOpen can reference it before create.
+	local editor: any = nil
+	local chat = ChatView.create(viewHost, {
+		placeholder = "Ask the agent... (e.g. build a red house)",
+		greeting = "**OpenCodeLuau** - AI agent for Roblox Studio Lite.\n\nI can build parts, run Luau, read the console, manage files and skills. Try: *\"make a red pyramid in Workspace\"*.",
+	})
+	views.chat = chat
+
+	local consoleView = ConsoleView.create(viewHost, {})
+	views.console = consoleView
+	consoleView.root.Visible = false
+
+	local filesView = FilesView.create(viewHost, { root = "opencode" })
+	filesView.onOpen = function(path, name)
+		editor.load(path)
+		showView("editor")
+	end
+	views.files = filesView
+	filesView.root.Visible = false
+
+	editor = EditorView.create(viewHost, {
+		fileName = "untitled.luau",
+		onSaved = function()
+			Components.toast(viewHost, "Saved", "success")
+		end,
+		onSaveAs = function(content)
+			local path = editor.currentPath or "opencode/untitled.luau"
+			FS.write(path, content)
+		end,
+	})
+	views.editor = editor
+	editor.root.Visible = false
+
+	local skillsView = makeSkillsView(viewHost, {
+		onInstall = function(url)
+			local ok, meta = pcall(Skill.install, url)
+			if ok and meta then
+				Components.toast(viewHost, "Installed skill: " .. tostring(meta.name), "success")
+				skillsView.render()
+			else
+				Components.toast(viewHost, "Failed: " .. tostring(meta), "error")
+			end
+		end,
+		onOpen = function(name)
+			editor.load("opencode/skills/" .. name .. "/SKILL.md")
+			showView("editor")
+		end,
+	})
+	views.skills = skillsView
+	skillsView.root.Visible = false
+
+	local settingsView = SettingsView.create(viewHost, {
+		onUIScale = function(s)
+			Theme.setUIScale(s)
+			win.setScale(s)
+		end,
+		onSave = function()
+			Components.toast(viewHost, "Settings saved. Restart applies.", "success")
+		end,
+	})
+	views.settings = settingsView
+	settingsView.root.Visible = false
+
+	-- ---- Agent wiring ----
+	local history: { any } = {}
+	local sessionId = opts.session or "default"
+	local loaded = Session.load(sessionId)
+	if loaded and type(loaded.messages) == "table" then
+		history = loaded.messages
+	end
+
+	local isBusy = false
+
+	local function ensureSystem()
+		for _, m in ipairs(history) do
+			if m.role == "system" then
+				return
+			end
+		end
+		table.insert(history, 1, {
+			role = "system",
+			content = "",
+		})
+	end
+
+	local function onAgentEvent(ev: any)
+		if ev.kind == "delta" then
+			chat.addDelta(ev.text or "")
+		elseif ev.kind == "tool_start" then
+			chat.addMessage("tool", "Running **" .. tostring(ev.toolName) .. "**...")
+		elseif ev.kind == "tool_end" then
+			chat.finishDelta()
+			local preview = Markdown.plain(tostring(ev.result or ""))
+			if #preview > 180 then
+				preview = string.sub(preview, 1, 180) .. "..."
+			end
+			chat.addMessage("tool", "**" .. tostring(ev.toolName) .. "** done\n```\n" .. preview .. "\n```")
+		elseif ev.kind == "tool_error" then
+			chat.addMessage("tool", "Error in **" .. tostring(ev.toolName) .. "**: " .. tostring(ev.error))
+		elseif ev.kind == "message" then
+			chat.addMessage("assistant", ev.text or "")
+		elseif ev.kind == "done" then
+			chat.setStreaming(false)
+			isBusy = false
+			local data = Session.load(sessionId)
+			if not data then
+				data = Session.new("OpenCodeLuau", Provider.getConfig().model or "")
+			end
+			data.messages = history
+			data.updatedAt = os.time()
+			Session.save(data)
+		end
+	end
+
+	chat.onSubmit = function(text)
+		if isBusy then
+			chat.addMessage("system", "Agent is still working. Wait for it to finish.")
+			return
+		end
+		isBusy = true
+		chat.addMessage("assistant", "")
+		ensureSystem()
+		table.insert(history, { role = "user", content = text })
+		chat.setStreaming(true)
+
+		task.spawn(function()
+			local ok, err = pcall(function()
+				Agent.turn(history, onAgentEvent, {
+					maxToolIterations = opts.maxIterations or 12,
+				})
+			end)
+			if not ok then
+				chat.setStreaming(false)
+				isBusy = false
+				chat.addMessage("system", "Agent error: " .. tostring(err))
+			end
+		end)
+	end
+
+	showView("chat")
+
+	return {
+		window = win,
+		chat = chat,
+		showView = showView,
+		refreshSkills = function()
+			skillsView.render()
+		end,
+		getActiveView = function(): string
+			return activeView
+		end,
+	}
+end
+
+-- ---- Skills view ----
+makeSkillsView = function(parent: Instance, opts: { any }): any
+	local root = Ui.frame(parent, {
+		name = "SkillsView",
+		size = Ui.full(),
+		bg = "transparent",
+		borderSize = 0,
+	})
+
+	local sc = Components.scroll(root, {
+		name = "Scroll",
+		size = Ui.full(),
+		bg = "transparent",
+		scrollThickness = 5,
+		scrollbarColor = "textFaint",
+	})
+
+	local list = Ui.frame(sc, {
+		name = "List",
+		size = UDim2.new(1, -2 * Theme.sizes.padding, 0, 0),
+		position = UDim2.fromOffset(Theme.sizes.padding, Theme.sizes.padding),
+		bg = "transparent",
+		borderSize = 0,
+		automaticSize = Enum.AutomaticSize.Y,
+	})
+	Ui.listLayoutVertical(list, Theme.sizes.gap, 0)
+
+	local installRow = Ui.frame(list, {
+		name = "InstallRow",
+		size = UDim2.new(1, 0, 0, 40),
+		bg = "transparent",
+		borderSize = 0,
+		layoutOrder = 1,
+	})
+	local urlInput = Components.textInput(installRow, {
+		placeholder = "Skill zip URL (e.g. https://host/skill.zip)",
+		height = 40,
+		size = UDim2.new(1, -86, 0, 40),
+	})
+	urlInput.container.Position = UDim2.fromOffset(0, 0)
+	Components.button(installRow, {
+		text = "Install",
+		size = UDim2.fromOffset(80, 40),
+		position = UDim2.new(1, -80, 0, 0),
+		layoutOrder = 2,
+		onClick = function()
+			local url = urlInput.box.Text:gsub("^%s+", ""):gsub("%s+$", "")
+			if #url > 0 and opts.onInstall then
+				pcall(opts.onInstall, url)
+			end
+		end,
+	})
+
+	local header = Ui.text(list, {
+		name = "Header",
+		text = "Installed skills",
+		fg = "textDim",
+		textSize = Theme.sizes.fontSizeSmall,
+		font = "medium",
+		transparency = 1,
+		layoutOrder = 2,
+	})
+
+	local api = {} :: any
+
+	local function render()
+		for _, child in ipairs(list:GetChildren()) do
+			if child:IsA("Frame") and child.Name ~= "InstallRow" then
+				child:Destroy()
+			end
+		end
+		local skills = Skill.list()
+		for i, meta in ipairs(skills) do
+			local row = Ui.glass(list, {
+				name = "SkillRow",
+				size = UDim2.new(1, 0, 0, 60),
+				glassDepth = 2,
+				borderSize = 0,
+				layoutOrder = 2 + i,
+				active = true,
+			})
+			Ui.text(row, {
+				name = "Name",
+				text = meta.name,
+				fg = "text",
+				textSize = Theme.sizes.fontSize,
+				font = "medium",
+				size = UDim2.new(1, -70, 0, 24),
+				position = UDim2.fromOffset(10, 6),
+				alignX = Enum.TextXAlignment.Left,
+				transparency = 1,
+			})
+			Ui.text(row, {
+				name = "Desc",
+				text = meta.description or meta.instruction,
+				fg = "textDim",
+				textSize = Theme.sizes.fontSizeSmall,
+				size = UDim2.new(1, -70, 0, 20),
+				position = UDim2.fromOffset(10, 30),
+				alignX = Enum.TextXAlignment.Left,
+				transparency = 1,
+				wraps = true,
+			})
+			row.Activated:Connect(function()
+				if opts.onOpen then
+					pcall(opts.onOpen, meta.name)
+				end
+			end)
+		end
+	end
+
+	api.root = root
+	api.render = render
+	return api
+end
+
+-- Refresh the skills list after installs.
+function Main.refreshSkills()
+	-- Called via closure captured in makeSkillsView; kept for API completeness.
+end
+
+return Main
