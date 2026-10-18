@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.8.0"
+Main.version = "v1.9.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -186,7 +186,7 @@ Modules["./AI/Provider"] = function()
 		return table.concat(chars, "")
 	end
 
-	-- Exactly 3 Supported Providers: Google Gemini, Groq, OpenRouter
+	-- Supported Providers: Google Gemini, Groq, OpenRouter, Big Pickle (OpenCode Zen)
 	local providerSpecs = {
 		gemini = {
 			name = "Google Gemini",
@@ -206,19 +206,27 @@ Modules["./AI/Provider"] = function()
 			defaultModel = "google/gemini-3.8-flash",
 			models = { "google/gemini-3.8-flash", "meta-llama/llama-3.3-70b-instruct", "deepseek/deepseek-chat" },
 		},
+		bigpickle = {
+			name = "Big Pickle (OpenCode Zen)",
+			baseUrl = "https://opencode.ai/zen/v1",
+			defaultModel = "big-pickle",
+			models = { "big-pickle" },
+		},
 	}
 
 	local config = {
-		activeProvider = "auto", -- auto, gemini, groq, openrouter
+		activeProvider = "auto", -- auto, gemini, groq, openrouter, bigpickle
 		models = {
 			gemini = "gemini-3.8-flash",
 			groq = "llama-3.3-70b-versatile",
 			openrouter = "google/gemini-3.8-flash",
+			bigpickle = "big-pickle",
 		},
 		keys = {
 			gemini = "",
 			groq = "",
 			openrouter = "",
+			bigpickle = "",
 		},
 	}
 
@@ -268,11 +276,13 @@ Modules["./AI/Provider"] = function()
 				gemini = config.models.gemini,
 				groq = config.models.groq,
 				openrouter = config.models.openrouter,
+				bigpickle = config.models.bigpickle,
 			},
 			keys = {
 				gemini = config.keys.gemini,
 				groq = config.keys.groq,
 				openrouter = config.keys.openrouter,
+				bigpickle = config.keys.bigpickle,
 			},
 			model = config.models[config.activeProvider] or config.models.gemini,
 		}
@@ -286,6 +296,7 @@ Modules["./AI/Provider"] = function()
 				gemini = obfuscateKey(config.keys.gemini),
 				groq = obfuscateKey(config.keys.groq),
 				openrouter = obfuscateKey(config.keys.openrouter),
+				bigpickle = obfuscateKey(config.keys.bigpickle),
 			},
 		}
 	end
@@ -416,7 +427,7 @@ Modules["./AI/Provider"] = function()
 		local prov = provId or config.activeProvider
 
 		if prov == "auto" then
-			local sequence = { "gemini", "groq", "openrouter" }
+			local sequence = { "gemini", "groq", "openrouter", "bigpickle" }
 			local logs = {}
 			local testedAny = false
 
@@ -466,7 +477,7 @@ Modules["./AI/Provider"] = function()
 			return ok, content, toolCalls
 		end
 
-		local sequence = { "gemini", "groq", "openrouter" }
+		local sequence = { "gemini", "groq", "openrouter", "bigpickle" }
 		local attemptedCount = 0
 		local errorLogs = {}
 
@@ -1552,18 +1563,19 @@ Modules["./UI/Views/Settings"] = function()
 		local cfg = Provider.getConfig()
 		local specs = Provider.getSpecs()
 
-		-- 3 Supported Provider Options
+		-- Supported Provider Options
 		Ui.text(scroll, { text = "Aktif AI Sağlayıcısı Seçimi:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 
 		local provOptions = {
-			{ id = "auto", label = "⚡ Otomatik (Gemini → Groq → OpenRouter)" },
+			{ id = "auto", label = "⚡ Otomatik (Gemini → Groq → OpenRouter → Big Pickle)" },
 			{ id = "gemini", label = "Google Gemini (gemini-3.8-flash)" },
 			{ id = "groq", label = "Groq" },
 			{ id = "openrouter", label = "OpenRouter" },
+			{ id = "bigpickle", label = "Big Pickle (OpenCode Zen)" },
 		}
 
 		local currentActive = cfg.activeProvider or "auto"
-		if currentActive ~= "gemini" and currentActive ~= "groq" and currentActive ~= "openrouter" then
+		if currentActive ~= "gemini" and currentActive ~= "groq" and currentActive ~= "openrouter" and currentActive ~= "bigpickle" then
 			currentActive = "auto"
 		end
 
@@ -1581,7 +1593,7 @@ Modules["./UI/Views/Settings"] = function()
 		for _, item in ipairs(provOptions) do
 			Components.button(selectRow, {
 				text = item.id:sub(1, 4):upper(),
-				size = UDim2.fromOffset(60, 32),
+				size = UDim2.fromOffset(55, 32),
 				bg = (item.id == currentActive) and "accent" or "bg3",
 				textColor = (item.id == currentActive) and "bg" or "text",
 				onClick = function()
@@ -1602,6 +1614,9 @@ Modules["./UI/Views/Settings"] = function()
 
 		Ui.text(scroll, { text = "OpenRouter API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 		local openrouterKeyInput = Components.textInput(scroll, { placeholder = "sk-or-v1-...", text = cfg.keys.openrouter, size = UDim2.new(1, 0, 0, 38) })
+
+		Ui.text(scroll, { text = "Big Pickle (OpenCode Zen) API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
+		local bigpickleKeyInput = Components.textInput(scroll, { placeholder = "zen_...", text = cfg.keys.bigpickle, size = UDim2.new(1, 0, 0, 38) })
 
 		-- Status Display Box
 		local statusBox = Ui.frame(scroll, {
@@ -1650,6 +1665,7 @@ Modules["./UI/Views/Settings"] = function()
 					gemini = geminiKeyInput.box.Text,
 					groq = groqKeyInput.box.Text,
 					openrouter = openrouterKeyInput.box.Text,
+					bigpickle = bigpickleKeyInput.box.Text,
 				},
 			})
 
@@ -1667,6 +1683,7 @@ Modules["./UI/Views/Settings"] = function()
 					gemini = geminiKeyInput.box.Text,
 					groq = groqKeyInput.box.Text,
 					openrouter = openrouterKeyInput.box.Text,
+					bigpickle = bigpickleKeyInput.box.Text,
 				},
 			}
 			Provider.setConfig(updatedConfig)
@@ -1820,7 +1837,7 @@ function Main.start(parent, opts)
 	-- ---- Create Views ----
 	local chat = ChatView.create(viewHost, {
 		placeholder = "WHITEBLOD AI'a komut veya soru yazın...",
-		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nDesteklenen AI Sağlayıcıları: Google Gemini (gemini-3.8-flash), Groq, OpenRouter.\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
+		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nDesteklenen AI Sağlayıcıları: Google Gemini, Groq, OpenRouter, Big Pickle (OpenCode Zen).\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
 	})
 	views.chat = chat
 
