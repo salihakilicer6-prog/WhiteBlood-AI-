@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.0.0"
+Main.version = "v1.1.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -159,36 +159,159 @@ Modules["./AI/Provider"] = function()
 	local JSON = requireModule("./Core/JSON")
 
 	local Provider = {}
-	local config = {
-		baseUrl = "https://api.openai.com/v1",
-		apiKey = "",
-		model = "gpt-4o-mini",
-		providerType = "openai",
+
+	-- Obfuscation helpers for local key security
+	local function obfuscateKey(str)
+		if not str or #str == 0 then return "" end
+		if str:sub(1, 4) == "ENC:" then return str end
+		local bytes = {}
+		for i = 1, #str do
+			local b = string.byte(str, i)
+			table.insert(bytes, string.format("%02x", bit32.xor(b, 0x5A)))
+		end
+		return "ENC:" .. table.concat(bytes, "")
+	end
+
+	local function deobfuscateKey(str)
+		if not str or #str == 0 then return "" end
+		if str:sub(1, 4) ~= "ENC:" then return str end
+		local hex = str:sub(5)
+		local chars = {}
+		for i = 1, #hex, 2 do
+			local b = tonumber(hex:sub(i, i + 1), 16)
+			if b then
+				table.insert(chars, string.char(bit32.xor(b, 0x5A)))
+			end
+		end
+		return table.concat(chars, "")
+	end
+
+	-- Multi-Provider Defaults & Supported Models
+	local providerSpecs = {
+		gemini = {
+			name = "Google Gemini",
+			baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
+			defaultModel = "gemini-2.0-flash",
+			models = { "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro" },
+		},
+		groq = {
+			name = "Groq",
+			baseUrl = "https://api.groq.com/openai/v1",
+			defaultModel = "llama-3.3-70b-versatile",
+			models = { "llama-3.3-70b-versatile", "llama-3.1-80b-instant", "mixtral-8x7b-32768" },
+		},
+		cerebras = {
+			name = "Cerebras",
+			baseUrl = "https://api.cerebras.ai/v1",
+			defaultModel = "llama-3.3-70b",
+			models = { "llama-3.3-70b", "llama3.1-8b" },
+		},
+		openrouter = {
+			name = "OpenRouter",
+			baseUrl = "https://openrouter.ai/api/v1",
+			defaultModel = "google/gemini-2.0-flash-001",
+			models = { "google/gemini-2.0-flash-001", "meta-llama/llama-3.3-70b-instruct", "deepseek/deepseek-chat" },
+		},
+		custom = {
+			name = "Custom / OpenAI",
+			baseUrl = "https://api.openai.com/v1",
+			defaultModel = "gpt-4o-mini",
+			models = { "gpt-4o-mini", "gpt-4o" },
+		},
 	}
+
+	local config = {
+		activeProvider = "auto", -- auto, gemini, groq, cerebras, openrouter, custom
+		models = {
+			gemini = "gemini-2.0-flash",
+			groq = "llama-3.3-70b-versatile",
+			cerebras = "llama-3.3-70b",
+			openrouter = "google/gemini-2.0-flash-001",
+			custom = "gpt-4o-mini",
+		},
+		keys = {
+			gemini = "",
+			groq = "",
+			cerebras = "",
+			openrouter = "",
+			custom = "",
+		},
+		customBaseUrl = "https://api.openai.com/v1",
+	}
+
+	function Provider.getSpecs()
+		return providerSpecs
+	end
 
 	function Provider.setConfig(newConfig)
 		if type(newConfig) == "table" then
-			if type(newConfig.baseUrl) == "string" and #newConfig.baseUrl > 0 then
-				config.baseUrl = newConfig.baseUrl:gsub("/+$", "")
+			if type(newConfig.activeProvider) == "string" then
+				config.activeProvider = newConfig.activeProvider
 			end
-			if type(newConfig.apiKey) == "string" then
-				config.apiKey = newConfig.apiKey
+			if type(newConfig.customBaseUrl) == "string" and #newConfig.customBaseUrl > 0 then
+				config.customBaseUrl = newConfig.customBaseUrl:gsub("/+$", "")
+			end
+			if type(newConfig.keys) == "table" then
+				for k, v in pairs(newConfig.keys) do
+					if type(v) == "string" then
+						config.keys[k] = deobfuscateKey(v)
+					end
+				end
+			end
+			if type(newConfig.models) == "table" then
+				for k, v in pairs(newConfig.models) do
+					if type(v) == "string" and #v > 0 then
+						config.models[k] = v
+					end
+				end
+			end
+			-- Support legacy top-level config keys
+			if type(newConfig.apiKey) == "string" and #newConfig.apiKey > 0 then
+				config.keys.custom = deobfuscateKey(newConfig.apiKey)
+			end
+			if type(newConfig.baseUrl) == "string" and #newConfig.baseUrl > 0 then
+				config.customBaseUrl = newConfig.baseUrl:gsub("/+$", "")
 			end
 			if type(newConfig.model) == "string" and #newConfig.model > 0 then
-				config.model = newConfig.model
-			end
-			if type(newConfig.providerType) == "string" and #newConfig.providerType > 0 then
-				config.providerType = newConfig.providerType
+				config.models.custom = newConfig.model
 			end
 		end
 	end
 
 	function Provider.getConfig()
 		return {
-			baseUrl = config.baseUrl,
-			apiKey = config.apiKey,
-			model = config.model,
-			providerType = config.providerType,
+			activeProvider = config.activeProvider,
+			customBaseUrl = config.customBaseUrl,
+			models = {
+				gemini = config.models.gemini,
+				groq = config.models.groq,
+				cerebras = config.models.cerebras,
+				openrouter = config.models.openrouter,
+				custom = config.models.custom,
+			},
+			keys = {
+				gemini = config.keys.gemini,
+				groq = config.keys.groq,
+				cerebras = config.keys.cerebras,
+				openrouter = config.keys.openrouter,
+				custom = config.keys.custom,
+			},
+			model = config.models[config.activeProvider] or config.models.gemini,
+		}
+	end
+
+	function Provider.getExportableConfig()
+		return {
+			activeProvider = config.activeProvider,
+			customBaseUrl = config.customBaseUrl,
+			models = config.models,
+			keys = {
+				gemini = obfuscateKey(config.keys.gemini),
+				groq = obfuscateKey(config.keys.groq),
+				cerebras = obfuscateKey(config.keys.cerebras),
+				openrouter = obfuscateKey(config.keys.openrouter),
+				custom = obfuscateKey(config.keys.custom),
+			},
 		}
 	end
 
@@ -209,7 +332,7 @@ Modules["./AI/Provider"] = function()
 
 		local okGame, gameObj = pcall(function() return game end)
 		if not okGame or not gameObj then
-			return false, 0, "Roblox environment not found"
+			return false, 0, "Roblox ortamı bulunamadı"
 		end
 
 		local HttpService = gameObj:GetService("HttpService")
@@ -235,62 +358,34 @@ Modules["./AI/Provider"] = function()
 		return status >= 200 and status < 300, status, body
 	end
 
-	function Provider.testConnection()
-		local cfg = Provider.getConfig()
-		if not cfg.apiKey or cfg.apiKey == "" then
-			return false, "API Anahtarı girilmedi. Lütfen Ayarlar sayfasından API anahtarınızı tanımlayın."
+	local function sendCompletionForProvider(provId, messages, tools)
+		local spec = providerSpecs[provId]
+		if not spec then return false, "Bilinmeyen sağlayıcı: " .. tostring(provId), nil, 0 end
+
+		local apiKey = config.keys[provId] or ""
+		if not apiKey or #apiKey == 0 then
+			return false, spec.name .. " için API Anahtarı girilmedi.", nil, 401
 		end
 
-		local url = cfg.baseUrl .. "/models"
-		local headers = {
-			["Authorization"] = "Bearer " .. cfg.apiKey,
-			["Content-Type"] = "application/json",
-		}
+		local baseUrl = provId == "custom" and config.customBaseUrl or spec.baseUrl
+		local modelName = config.models[provId] or spec.defaultModel
+		local url = baseUrl .. "/chat/completions"
 
-		local success, status, body = httpRequest({
-			Url = url,
-			Method = "GET",
-			Headers = headers,
-		})
-
-		if success then
-			return true, "API Bağlantısı Başarılı! (" .. cfg.baseUrl .. ")"
-		else
-			if status == 401 then
-				return false, "Hata [401]: Geçersiz API Anahtarı."
-			elseif status == 404 then
-				return false, "Hata [404]: URL bulunamadı (" .. url .. ")."
-			else
-				return false, "Bağlantı Başarısız [" .. tostring(status) .. "]: " .. tostring(body)
-			end
-		end
-	end
-
-	function Provider.chatCompletion(messages, tools, callback)
-		local cfg = Provider.getConfig()
-		if not cfg.apiKey or cfg.apiKey == "" then
-			return false, "API Anahtarı ayarlanmamış! Lütfen Ayarlar sekmesinden API anahtarınızı girin.", nil
-		end
-
-		local url = cfg.baseUrl .. "/chat/completions"
 		local payload = {
-			model = cfg.model,
+			model = modelName,
 			messages = messages,
 			stream = false,
 		}
-
-		if tools and #tools > 0 then
-			payload.tools = tools
-		end
+		if tools and #tools > 0 then payload.tools = tools end
 
 		local headers = {
-			["Authorization"] = "Bearer " .. cfg.apiKey,
+			["Authorization"] = "Bearer " .. apiKey,
 			["Content-Type"] = "application/json",
 		}
 
 		local okEncode, jsonBody = pcall(JSON.encode, payload)
 		if not okEncode then
-			return false, "JSON Kodlama Hatası: " .. tostring(jsonBody), nil
+			return false, "JSON Kodlama Hatası: " .. tostring(jsonBody), nil, 0
 		end
 
 		local success, status, body = httpRequest({
@@ -301,32 +396,111 @@ Modules["./AI/Provider"] = function()
 		})
 
 		if not success then
-			local errMsg = "API Bağlantı Hatası [" .. tostring(status) .. "]"
+			local errMsg = spec.name .. " Hatası [" .. tostring(status) .. "]"
 			if #body > 0 then
 				local okDec, dec = pcall(JSON.decode, body)
 				if okDec and type(dec) == "table" and dec.error and dec.error.message then
-					errMsg = "API Hatası: " .. tostring(dec.error.message)
+					errMsg = spec.name .. " API Hatası: " .. tostring(dec.error.message)
 				else
-					errMsg = errMsg .. ": " .. string.sub(body, 1, 200)
+					errMsg = errMsg .. ": " .. string.sub(body, 1, 180)
 				end
 			end
-			return false, errMsg, nil
+			return false, errMsg, nil, status
 		end
 
 		local okDec, decoded = pcall(JSON.decode, body)
 		if not okDec or type(decoded) ~= "table" then
-			return false, "Geçersiz API Yanıtı (JSON okunamadı)", nil
+			return false, spec.name .. " geçersiz JSON döndürdü", nil, status
 		end
 
 		local choice = decoded.choices and decoded.choices[1]
 		if not choice then
-			return false, "API boş yanıt döndürdü", nil
+			return false, spec.name .. " boş yanıt döndürdü", nil, status
 		end
 
 		local content = choice.message and choice.message.content or ""
 		local toolCalls = choice.message and choice.message.tool_calls or nil
 
-		return true, content, toolCalls
+		return true, content, toolCalls, status
+	end
+
+	function Provider.testConnection(provId)
+		local prov = provId or config.activeProvider
+		if prov == "auto" then prov = "gemini" end
+
+		local spec = providerSpecs[prov]
+		if not spec then return false, "Geçersiz sağlayıcı" end
+
+		local apiKey = config.keys[prov] or ""
+		if not apiKey or #apiKey == 0 then
+			return false, spec.name .. " için API Anahtarı girilmedi. Ayarlar sayfasından anahtarı ekleyin."
+		end
+
+		local baseUrl = prov == "custom" and config.customBaseUrl or spec.baseUrl
+		local url = baseUrl .. "/models"
+		local headers = {
+			["Authorization"] = "Bearer " .. apiKey,
+			["Content-Type"] = "application/json",
+		}
+
+		local success, status, body = httpRequest({
+			Url = url,
+			Method = "GET",
+			Headers = headers,
+		})
+
+		if success then
+			return true, spec.name .. " API Bağlantısı Başarılı! (" .. baseUrl .. ")"
+		else
+			if status == 401 or status == 403 then
+				return false, "Hata [" .. tostring(status) .. "]: " .. spec.name .. " Geçersiz API Anahtarı."
+			elseif status == 404 then
+				return false, "Hata [404]: URL bulunamadı (" .. url .. ")."
+			else
+				return false, spec.name .. " Bağlantı Başarısız [" .. tostring(status) .. "]: " .. tostring(body)
+			end
+		end
+	end
+
+	function Provider.chatCompletion(messages, tools, callback)
+		local active = config.activeProvider
+
+		-- Direct single-provider mode
+		if active ~= "auto" then
+			local ok, content, toolCalls, status = sendCompletionForProvider(active, messages, tools)
+			return ok, content, toolCalls
+		end
+
+		-- Automatic Multi-Provider Failover Sequence
+		local sequence = { "gemini", "groq", "cerebras", "openrouter", "custom" }
+		local attemptedCount = 0
+		local errorLogs = {}
+
+		for _, provId in ipairs(sequence) do
+			local apiKey = config.keys[provId]
+			if apiKey and #apiKey > 0 then
+				attemptedCount = attemptedCount + 1
+				local ok, content, toolCalls, status = sendCompletionForProvider(provId, messages, tools)
+
+				if ok then
+					return true, content, toolCalls
+				end
+
+				-- Halt failover on invalid key / authentication error
+				if status == 401 or status == 403 then
+					return false, "Geçersiz API Anahtarı [" .. tostring(status) .. "] (" .. providerSpecs[provId].name .. "): Lütfen API anahtarınızı kontrol edin.", nil
+				end
+
+				-- Quota limit (429) or Server error (5xx) or Network timeout: Log & Try next provider
+				table.insert(errorLogs, providerSpecs[provId].name .. " [" .. tostring(status) .. "]: " .. tostring(content))
+			end
+		end
+
+		if attemptedCount == 0 then
+			return false, "Hiçbir sağlayıcı için API Anahtarı tanımlanmamış! Lütfen Ayarlar sekmesinden en az bir API anahtarı girin.", nil
+		end
+
+		return false, "Tüm aktif sağlayıcılar başarısız oldu:\n" .. table.concat(errorLogs, "\n"), nil
 	end
 
 	return Provider
@@ -342,7 +516,7 @@ Modules["./Agent/Session"] = function()
 		return {
 			id = "session_" .. tostring(os.time()),
 			name = name or "WHITEBLOD Chat",
-			model = model or "gpt-4o-mini",
+			model = model or "auto",
 			messages = {},
 			createdAt = os.time(),
 			updatedAt = os.time(),
@@ -872,10 +1046,16 @@ Modules["./UI/Window"] = function()
 	function Window.create(parent, opts)
 		local titleText = "WHITEBLOD AI"
 
-		local screenGui = parent or Instance.new("ScreenGui")
-		if screenGui:IsA("ScreenGui") then
+		local screenGui
+		if parent and typeof(parent) == "Instance" and parent:IsA("ScreenGui") then
+			screenGui = parent
+		else
+			screenGui = Instance.new("ScreenGui")
 			screenGui.Name = "WhiteBloodAI_GUI"
 			screenGui.ResetOnSpawn = false
+			if parent and typeof(parent) == "Instance" then
+				screenGui.Parent = parent
+			end
 		end
 
 		local mainContainer = Ui.frame(screenGui, {
@@ -1172,7 +1352,7 @@ Modules["./UI/Views/Editor"] = function()
 		local saveBtn = Components.button(topRow, {
 			text = "Kaydet",
 			size = UDim2.fromOffset(80, 36),
-			position = UDim2.new(1, -80, 0, 0),
+			position = UDim2.fromOffset(1, -80, 0, 0),
 			bg = "accent",
 			textColor = "bg",
 		})
@@ -1229,7 +1409,7 @@ Modules["./UI/Views/Settings"] = function()
 		Ui.listLayoutVertical(scroll, 10, Enum.HorizontalAlignment.Left)
 
 		Ui.text(scroll, {
-			text = "WHITEBLOD AI - Yapılandırma",
+			text = "WHITEBLOD AI - Çoklu Sağlayıcı Yapılandırması",
 			fg = "accent",
 			textSize = Theme.sizes.fontSizeTitle,
 			font = "bold",
@@ -1238,16 +1418,67 @@ Modules["./UI/Views/Settings"] = function()
 		})
 
 		local cfg = Provider.getConfig()
+		local specs = Provider.getSpecs()
 
-		Ui.text(scroll, { text = "Base URL (API Adresi):", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
-		local urlInput = Components.textInput(scroll, { placeholder = "https://api.openai.com/v1", text = cfg.baseUrl, size = UDim2.new(1, 0, 0, 40) })
+		-- Active Provider Mode Selection
+		Ui.text(scroll, { text = "Aktif AI Sağlayıcısı Seçimi:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 
-		Ui.text(scroll, { text = "API Anahtarı (API Key):", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
-		local keyInput = Components.textInput(scroll, { placeholder = "sk-...", text = cfg.apiKey, size = UDim2.new(1, 0, 0, 40) })
+		local provOptions = {
+			{ id = "auto", label = "⚡ Otomatik (Sırayla Otomatik Geçiş)" },
+			{ id = "gemini", label = "Google Gemini" },
+			{ id = "groq", label = "Groq" },
+			{ id = "cerebras", label = "Cerebras" },
+			{ id = "openrouter", label = "OpenRouter" },
+			{ id = "custom", label = "Custom / OpenAI" },
+		}
 
-		Ui.text(scroll, { text = "Model İsmi:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
-		local modelInput = Components.textInput(scroll, { placeholder = "gpt-4o-mini / deepseek-chat", text = cfg.model, size = UDim2.new(1, 0, 0, 40) })
+		local currentActive = cfg.activeProvider or "auto"
+		local activeBtnLabel = Ui.text(scroll, {
+			text = "Seçili: " .. currentActive:upper(),
+			fg = "accent",
+			textSize = Theme.sizes.fontSizeSmall,
+			font = "bold",
+			alignX = Enum.TextXAlignment.Left,
+		})
 
+		local selectRow = Ui.frame(scroll, { name = "SelectRow", size = UDim2.new(1, 0, 0, 36), bg = "transparent" })
+		Ui.listLayoutHorizontal(selectRow, 6)
+
+		for _, item in ipairs(provOptions) do
+			Components.button(selectRow, {
+				text = item.id:sub(1, 4):upper(),
+				size = UDim2.fromOffset(50, 32),
+				bg = (item.id == currentActive) and "accent" or "bg3",
+				textColor = (item.id == currentActive) and "bg" or "text",
+				onClick = function()
+					currentActive = item.id
+					activeBtnLabel.Text = "Seçili Mod: " .. item.label
+				end,
+			})
+		end
+
+		-- API Keys per provider
+		Ui.text(scroll, { text = "Sağlayıcı API Anahtarları (Her sağlayıcı için ayrı):", fg = "accent", textSize = Theme.sizes.fontSizeSmall, font = "bold", alignX = Enum.TextXAlignment.Left })
+
+		Ui.text(scroll, { text = "Google Gemini API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
+		local geminiKeyInput = Components.textInput(scroll, { placeholder = "AIzaSy...", text = cfg.keys.gemini, size = UDim2.new(1, 0, 0, 38) })
+
+		Ui.text(scroll, { text = "Groq API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
+		local groqKeyInput = Components.textInput(scroll, { placeholder = "gsk_...", text = cfg.keys.groq, size = UDim2.new(1, 0, 0, 38) })
+
+		Ui.text(scroll, { text = "Cerebras API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
+		local cerebrasKeyInput = Components.textInput(scroll, { placeholder = "csk-...", text = cfg.keys.cerebras, size = UDim2.new(1, 0, 0, 38) })
+
+		Ui.text(scroll, { text = "OpenRouter API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
+		local openrouterKeyInput = Components.textInput(scroll, { placeholder = "sk-or-v1-...", text = cfg.keys.openrouter, size = UDim2.new(1, 0, 0, 38) })
+
+		Ui.text(scroll, { text = "Custom / OpenAI API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
+		local customKeyInput = Components.textInput(scroll, { placeholder = "sk-...", text = cfg.keys.custom, size = UDim2.new(1, 0, 0, 38) })
+
+		Ui.text(scroll, { text = "Custom Base URL:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
+		local customUrlInput = Components.textInput(scroll, { placeholder = "https://api.openai.com/v1", text = cfg.customBaseUrl, size = UDim2.new(1, 0, 0, 38) })
+
+		-- Status Display Box
 		local statusBox = Ui.frame(scroll, {
 			name = "StatusBox",
 			size = UDim2.new(1, 0, 0, 60),
@@ -1256,7 +1487,7 @@ Modules["./UI/Views/Settings"] = function()
 			radius = Theme.sizes.radius,
 		})
 		local statusLabel = Ui.text(statusBox, {
-			text = "Durum: Bağlantı testi için aşağıdaki butona basın.",
+			text = "Durum: Çoklu sağlayıcı sistemi hazır.",
 			fg = "textDim",
 			textSize = Theme.sizes.fontSizeSmall,
 			alignX = Enum.TextXAlignment.Left,
@@ -1266,17 +1497,18 @@ Modules["./UI/Views/Settings"] = function()
 			wraps = true,
 		})
 
+		-- Action Buttons
 		local btnRow = Ui.frame(scroll, { name = "BtnRow", size = UDim2.new(1, 0, 0, 42), bg = "transparent" })
 
 		local testBtn = Components.button(btnRow, {
-			text = "API Bağlantısını Test Et",
+			text = "Seçili Sağlayıcıyı Test Et",
 			size = UDim2.new(0.48, 0, 1, 0),
 			position = UDim2.fromOffset(0, 0),
 			bg = "bg3",
 		})
 
 		local saveBtn = Components.button(btnRow, {
-			text = "Kaydet",
+			text = "Ayarları Kaydet",
 			size = UDim2.new(0.48, 0, 1, 0),
 			position = UDim2.new(0.52, 0, 0, 0),
 			bg = "accent",
@@ -1288,13 +1520,19 @@ Modules["./UI/Views/Settings"] = function()
 			statusLabel.TextColor3 = Theme.color("textDim")
 
 			Provider.setConfig({
-				baseUrl = urlInput.box.Text,
-				apiKey = keyInput.box.Text,
-				model = modelInput.box.Text,
+				activeProvider = currentActive,
+				customBaseUrl = customUrlInput.box.Text,
+				keys = {
+					gemini = geminiKeyInput.box.Text,
+					groq = groqKeyInput.box.Text,
+					cerebras = cerebrasKeyInput.box.Text,
+					openrouter = openrouterKeyInput.box.Text,
+					custom = customKeyInput.box.Text,
+				},
 			})
 
 			task.spawn(function()
-				local ok, msg = Provider.testConnection()
+				local ok, msg = Provider.testConnection(currentActive)
 				statusLabel.Text = msg
 				statusLabel.TextColor3 = ok and Theme.color("accent") or Theme.color("error")
 			end)
@@ -1302,19 +1540,26 @@ Modules["./UI/Views/Settings"] = function()
 
 		saveBtn.Activated:Connect(function()
 			local updatedConfig = {
-				baseUrl = urlInput.box.Text,
-				apiKey = keyInput.box.Text,
-				model = modelInput.box.Text,
+				activeProvider = currentActive,
+				customBaseUrl = customUrlInput.box.Text,
+				keys = {
+					gemini = geminiKeyInput.box.Text,
+					groq = groqKeyInput.box.Text,
+					cerebras = cerebrasKeyInput.box.Text,
+					openrouter = openrouterKeyInput.box.Text,
+					custom = customKeyInput.box.Text,
+				},
 			}
 			Provider.setConfig(updatedConfig)
 
 			pcall(function()
-				local jsonStr = JSON.encode(updatedConfig)
+				local exportable = Provider.getExportableConfig()
+				local jsonStr = JSON.encode(exportable)
 				FS.write("whiteblood/config.json", jsonStr)
 				FS.write("opencode/config.json", jsonStr)
 			end)
 
-			statusLabel.Text = "Ayarlar kaydedildi!"
+			statusLabel.Text = "Çoklu sağlayıcı ayarları güvenli şekilde kaydedildi!"
 			statusLabel.TextColor3 = Theme.color("accent")
 			if opts and opts.onSave then opts.onSave() end
 		end)
@@ -1445,7 +1690,7 @@ function Main.start(parent, opts)
 	-- ---- Create Views ----
 	local chat = ChatView.create(viewHost, {
 		placeholder = "WHITEBLOD AI'a komut veya soru yazın...",
-		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
+		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nÇoklu Sağlayıcı Desteği (Gemini, Groq, Cerebras, OpenRouter, Custom).\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
 	})
 	views.chat = chat
 
