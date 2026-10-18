@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.2.0"
+Main.version = "v1.3.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -160,7 +160,7 @@ Modules["./AI/Provider"] = function()
 
 	local Provider = {}
 
-	-- Obfuscation helpers for local key security
+	-- XOR obfuscation for local key storage safety (avoids plain text key files)
 	local function obfuscateKey(str)
 		if not str or #str == 0 then return "" end
 		if str:sub(1, 4) == "ENC:" then return str end
@@ -191,8 +191,8 @@ Modules["./AI/Provider"] = function()
 		gemini = {
 			name = "Google Gemini",
 			baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
-			defaultModel = "gemini-2.0-flash",
-			models = { "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro" },
+			defaultModel = "gemini-3.8-flash",
+			models = { "gemini-3.8-flash" },
 		},
 		groq = {
 			name = "Groq",
@@ -203,17 +203,17 @@ Modules["./AI/Provider"] = function()
 		openrouter = {
 			name = "OpenRouter",
 			baseUrl = "https://openrouter.ai/api/v1",
-			defaultModel = "google/gemini-2.0-flash-001",
-			models = { "google/gemini-2.0-flash-001", "meta-llama/llama-3.3-70b-instruct", "deepseek/deepseek-chat" },
+			defaultModel = "google/gemini-3.8-flash",
+			models = { "google/gemini-3.8-flash", "meta-llama/llama-3.3-70b-instruct", "deepseek/deepseek-chat" },
 		},
 	}
 
 	local config = {
 		activeProvider = "auto", -- auto, gemini, groq, openrouter
 		models = {
-			gemini = "gemini-2.0-flash",
+			gemini = "gemini-3.8-flash",
 			groq = "llama-3.3-70b-versatile",
-			openrouter = "google/gemini-2.0-flash-001",
+			openrouter = "google/gemini-3.8-flash",
 		},
 		keys = {
 			gemini = "",
@@ -233,7 +233,7 @@ Modules["./AI/Provider"] = function()
 				if act == "auto" or providerSpecs[act] then
 					config.activeProvider = act
 				else
-					config.activeProvider = "auto" -- Safe fallback for deprecated activeProvider
+					config.activeProvider = "auto"
 				end
 			end
 			if type(newConfig.keys) == "table" then
@@ -246,11 +246,16 @@ Modules["./AI/Provider"] = function()
 			if type(newConfig.models) == "table" then
 				for k, v in pairs(newConfig.models) do
 					if providerSpecs[k] and type(v) == "string" and #v > 0 then
+						-- Automatically migrate legacy models
+						if k == "gemini" and (v == "gemini-2.0-flash" or v == "gemini-1.5-flash" or v == "gemini-1.5-pro") then
+							v = "gemini-3.8-flash"
+						elseif k == "openrouter" and v == "google/gemini-2.0-flash-001" then
+							v = "google/gemini-3.8-flash"
+						end
 						config.models[k] = v
 					end
 				end
 			end
-			-- Support legacy single apiKey mapping
 			if type(newConfig.apiKey) == "string" and #newConfig.apiKey > 0 then
 				config.keys.gemini = deobfuscateKey(newConfig.apiKey)
 			end
@@ -349,7 +354,6 @@ Modules["./AI/Provider"] = function()
 		}
 		if tools and #tools > 0 then payload.tools = tools end
 
-		-- Build headers (Gemini supports both Bearer and x-goog-api-key)
 		local headers = {
 			["Authorization"] = "Bearer " .. apiKey,
 			["Content-Type"] = "application/json",
@@ -407,7 +411,35 @@ Modules["./AI/Provider"] = function()
 
 	function Provider.testConnection(provId)
 		local prov = provId or config.activeProvider
-		if prov == "auto" then prov = "gemini" end
+
+		if prov == "auto" then
+			local sequence = { "gemini", "groq", "openrouter" }
+			local logs = {}
+			local testedAny = false
+
+			for _, pId in ipairs(sequence) do
+				local key = config.keys[pId]
+				if key and #key > 0 then
+					testedAny = true
+					local ok, content, _, status = sendCompletionForProvider(pId, { { role = "user", content = "ping" } })
+					if ok then
+						local spec = providerSpecs[pId]
+						local mName = config.models[pId] or spec.defaultModel
+						return true, "✅ Otomatik Mod Başarılı! Aktif Sağlayıcı: " .. spec.name .. " (" .. mName .. ")"
+					else
+						table.insert(logs, providerSpecs[pId].name .. " [" .. tostring(status) .. "]: " .. tostring(content))
+						if status == 401 or status == 403 then
+							break
+						end
+					end
+				end
+			end
+
+			if not testedAny then
+				return false, "Hiçbir sağlayıcı için API Anahtarı tanımlanmamış! Lütfen anahtar ekleyin."
+			end
+			return false, "Otomatik mod testinde sağlayıcılar başarısız oldu:\n" .. table.concat(logs, "\n")
+		end
 
 		local spec = providerSpecs[prov]
 		if not spec then return false, "Geçersiz sağlayıcı" end
@@ -417,47 +449,24 @@ Modules["./AI/Provider"] = function()
 			return false, spec.name .. " için API Anahtarı girilmedi. Ayarlar sayfasından anahtarı ekleyin."
 		end
 
-		local baseUrl = spec.baseUrl
-		local url = baseUrl .. "/models"
-		local headers = {
-			["Authorization"] = "Bearer " .. apiKey,
-			["Content-Type"] = "application/json",
-		}
-		if prov == "gemini" then
-			headers["x-goog-api-key"] = apiKey
-		end
-
-		local success, status, body = httpRequest({
-			Url = url,
-			Method = "GET",
-			Headers = headers,
-		})
-
-		if success then
-			return true, spec.name .. " API Bağlantısı Başarılı! (" .. baseUrl .. ")"
+		-- Live chat completion test payload
+		local ok, content, _, status = sendCompletionForProvider(prov, { { role = "user", content = "ping" } })
+		if ok then
+			local mName = config.models[prov] or spec.defaultModel
+			return true, "✅ " .. spec.name .. " Sohbet Tamamlama Testi Başarılı! Model: " .. mName
 		else
-			if status == 401 or status == 403 then
-				return false, "Hata [" .. tostring(status) .. "]: " .. spec.name .. " Geçersiz API Anahtarı."
-			elseif status == 429 then
-				return false, "Hata [429]: " .. spec.name .. " Kota Sınırı Aşıldı."
-			elseif status == 404 then
-				return false, "Hata [404]: URL bulunamadı (" .. url .. ")."
-			else
-				return false, spec.name .. " Bağlantı Başarısız [" .. tostring(status) .. "]"
-			end
+			return false, "❌ " .. spec.name .. " Test Hatası [" .. tostring(status) .. "]: " .. tostring(content)
 		end
 	end
 
 	function Provider.chatCompletion(messages, tools, callback)
 		local active = config.activeProvider
 
-		-- Direct single-provider mode
 		if active ~= "auto" then
 			local ok, content, toolCalls, status = sendCompletionForProvider(active, messages, tools)
 			return ok, content, toolCalls
 		end
 
-		-- Automatic Multi-Provider Failover Sequence (Gemini -> Groq -> OpenRouter)
 		local sequence = { "gemini", "groq", "openrouter" }
 		local attemptedCount = 0
 		local errorLogs = {}
@@ -472,12 +481,10 @@ Modules["./AI/Provider"] = function()
 					return true, content, toolCalls
 				end
 
-				-- Immediately halt failover on invalid API key / 401/403 auth error
 				if status == 401 or status == 403 then
 					return false, "Geçersiz API Anahtarı [" .. tostring(status) .. "] (" .. providerSpecs[provId].name .. "): Lütfen API anahtarınızı kontrol edin.", nil
 				end
 
-				-- Quota limit (429) or Server error (5xx) or Network timeout: Log provider attempt & Try next provider
 				table.insert(errorLogs, providerSpecs[provId].name .. " [" .. tostring(status) .. "]: " .. tostring(content))
 			end
 		end
@@ -1027,6 +1034,7 @@ Modules["./UI/Window"] = function()
 	local Theme = requireModule("./UI/Theme")
 	local Ui = requireModule("./UI/Ui")
 	local Components = requireModule("./UI/Components")
+	local Device = requireModule("./Core/Device")
 	local Window = {}
 
 	function Window.create(parent, opts)
@@ -1082,6 +1090,52 @@ Modules["./UI/Window"] = function()
 			end,
 		})
 
+		-- Touch & Mouse Dragging Logic with Viewport Clamping
+		local connections = {}
+		local dragging = false
+		local dragStart = Vector3.new(0, 0, 0)
+		local startPos = UDim2.new(0, 0, 0, 0)
+
+		local okGame, gameObj = pcall(function() return game end)
+		local UserInputService = (okGame and gameObj) and gameObj:GetService("UserInputService") or nil
+
+		if UserInputService then
+			table.insert(connections, topBar.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					dragging = true
+					dragStart = input.Position
+					startPos = mainContainer.Position
+
+					local conn
+					conn = input.Changed:Connect(function()
+						if input.UserInputState == Enum.UserInputState.End then
+							dragging = false
+							if conn then conn:Disconnect() end
+						end
+					end)
+					table.insert(connections, conn)
+				end
+			end))
+
+			table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+				if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+					local delta = input.Position - dragStart
+					local newX = startPos.X.Offset + delta.X
+					local newY = startPos.Y.Offset + delta.Y
+
+					-- Clamp window position inside viewport bounds so it never gets lost off-screen
+					local vw, vh = Device.viewportSize()
+					local maxX = math.max(0, vw - mainContainer.AbsoluteSize.X)
+					local maxY = math.max(0, vh - mainContainer.AbsoluteSize.Y)
+
+					newX = math.clamp(newX, 0, maxX)
+					newY = math.clamp(newY, 0, maxY)
+
+					mainContainer.Position = UDim2.fromOffset(newX, newY)
+				end
+			end))
+		end
+
 		local content = Ui.frame(mainContainer, {
 			name = "Content",
 			size = UDim2.new(1, 0, 1, -Theme.sizes.topBarHeight),
@@ -1094,7 +1148,17 @@ Modules["./UI/Window"] = function()
 			Frame = mainContainer,
 			Content = content,
 			setScale = function(scale) Theme.setUIScale(scale) end,
-			destroy = function() if mainContainer and mainContainer.Parent then mainContainer:Destroy() end end,
+			destroy = function()
+				for _, conn in ipairs(connections) do
+					if conn and typeof(conn) == "RBXScriptConnection" then
+						pcall(function() conn:Disconnect() end)
+					end
+				end
+				connections = {}
+				if mainContainer and mainContainer.Parent then
+					mainContainer:Destroy()
+				end
+			end,
 		}
 	end
 
@@ -1395,7 +1459,7 @@ Modules["./UI/Views/Settings"] = function()
 		Ui.listLayoutVertical(scroll, 10, Enum.HorizontalAlignment.Left)
 
 		Ui.text(scroll, {
-			text = "WHITEBLOD AI - Yapılandırma",
+			text = "WHITEBLOD AI - Çoklu Sağlayıcı Yapılandırması",
 			fg = "accent",
 			textSize = Theme.sizes.fontSizeTitle,
 			font = "bold",
@@ -1404,13 +1468,14 @@ Modules["./UI/Views/Settings"] = function()
 		})
 
 		local cfg = Provider.getConfig()
+		local specs = Provider.getSpecs()
 
 		-- 3 Supported Provider Options
 		Ui.text(scroll, { text = "Aktif AI Sağlayıcısı Seçimi:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 
 		local provOptions = {
 			{ id = "auto", label = "⚡ Otomatik (Gemini → Groq → OpenRouter)" },
-			{ id = "gemini", label = "Google Gemini" },
+			{ id = "gemini", label = "Google Gemini (gemini-3.8-flash)" },
 			{ id = "groq", label = "Groq" },
 			{ id = "openrouter", label = "OpenRouter" },
 		}
@@ -1479,7 +1544,7 @@ Modules["./UI/Views/Settings"] = function()
 		local btnRow = Ui.frame(scroll, { name = "BtnRow", size = UDim2.new(1, 0, 0, 42), bg = "transparent" })
 
 		local testBtn = Components.button(btnRow, {
-			text = "Seçili Sağlayıcıyı Test Et",
+			text = "Sohbet Tamamlama Testi Yap",
 			size = UDim2.new(0.48, 0, 1, 0),
 			position = UDim2.fromOffset(0, 0),
 			bg = "bg3",
@@ -1494,7 +1559,7 @@ Modules["./UI/Views/Settings"] = function()
 		})
 
 		testBtn.Activated:Connect(function()
-			statusLabel.Text = "Bağlantı test ediliyor..."
+			statusLabel.Text = "Canlı sohbet tamamlama isteği gönderiliyor..."
 			statusLabel.TextColor3 = Theme.color("textDim")
 
 			Provider.setConfig({
@@ -1662,7 +1727,7 @@ function Main.start(parent, opts)
 	-- ---- Create Views ----
 	local chat = ChatView.create(viewHost, {
 		placeholder = "WHITEBLOD AI'a komut veya soru yazın...",
-		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nDesteklenen AI Sağlayıcıları: Google Gemini, Groq, OpenRouter.\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
+		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nDesteklenen AI Sağlayıcıları: Google Gemini (gemini-3.8-flash), Groq, OpenRouter.\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
 	})
 	views.chat = chat
 
