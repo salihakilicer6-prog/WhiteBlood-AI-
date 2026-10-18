@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.6.0"
+Main.version = "v1.7.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -324,6 +324,8 @@ Modules["./AI/Provider"] = function()
 			local errStr = tostring(result)
 			if errStr:find("Http requests are not enabled") or errStr:find("HttpEnabled") then
 				return false, 0, "Roblox Studio Settings -> Security -> Allow HTTP Requests seçeneği kapalı! Lütfen HTTP isteklerine izin verin."
+			elseif errStr:find("timed out") or errStr:find("Timeout") or errStr:find("zaman aştı") then
+				return false, 0, "HTTP Zaman Aşımı Hatası: Sunucu zamanında yanıt vermedi."
 			end
 			return false, 0, "Ağ / Bağlantı Hatası: " .. errStr
 		end
@@ -429,9 +431,6 @@ Modules["./AI/Provider"] = function()
 						return true, "✅ Otomatik Mod Başarılı! Aktif Sağlayıcı: " .. spec.name .. " (" .. mName .. ")"
 					else
 						table.insert(logs, providerSpecs[pId].name .. " [" .. tostring(status) .. "]: " .. tostring(content))
-						if status == 401 or status == 403 then
-							break
-						end
 					end
 				end
 			end
@@ -479,10 +478,6 @@ Modules["./AI/Provider"] = function()
 
 				if ok then
 					return true, content, toolCalls
-				end
-
-				if status == 401 or status == 403 then
-					return false, "Geçersiz API Anahtarı [" .. tostring(status) .. "] (" .. providerSpecs[provId].name .. "): Lütfen API anahtarınızı kontrol edin.", nil
 				end
 
 				table.insert(errorLogs, providerSpecs[provId].name .. " [" .. tostring(status) .. "]: " .. tostring(content))
@@ -658,13 +653,25 @@ Modules["./Agent/Skill"] = function()
 				return false, "Luau Sözdizimi Hatası: " .. tostring(syntaxErr)
 			end
 
+			-- Safe Service & Atmosphere check before running
+			local okGame, gameObj = pcall(function() return game end)
+			if okGame and gameObj then
+				local okLight, lighting = pcall(function() return gameObj:GetService("Lighting") end)
+				if okLight and lighting and not lighting:FindFirstChildOfClass("Atmosphere") then
+					pcall(function()
+						local atmos = Instance.new("Atmosphere")
+						atmos.Parent = lighting
+					end)
+				end
+			end
+
 			local ok, execErr = pcall(fn)
 			if ok then
 				return true, "Luau kodu başarıyla çalıştırıldı."
 			else
 				local errStr = tostring(execErr)
 				if errStr:find("Atmosphere") and errStr:find("Lighting") then
-					errStr = "Lighting servisinde Atmosphere bulunamadı! Lütfen nokta erişimi (Lighting.Atmosphere) yerine Lighting:FindFirstChildOfClass('Atmosphere') kullanın veya bir Atmosphere nesnesi ekleyin."
+					errStr = "Lighting servisinde Atmosphere erişim hatası! Lütfen Lighting:FindFirstChildOfClass('Atmosphere') kullanın veya bir Atmosphere ekleyin."
 				end
 				return false, "Çalıştırma Hatası: " .. errStr
 			end
