@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.4.0"
+Main.version = "v1.5.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -1081,7 +1081,39 @@ Modules["./UI/Window"] = function()
 			font = "bold",
 			alignX = Enum.TextXAlignment.Left,
 			position = UDim2.fromOffset(14, 0),
-			size = UDim2.new(0.6, 0, 1, 0),
+			size = UDim2.new(0.5, 0, 1, 0),
+		})
+
+		local content = Ui.frame(mainContainer, {
+			name = "Content",
+			size = UDim2.new(1, 0, 1, -Theme.sizes.topBarHeight),
+			position = UDim2.fromOffset(0, Theme.sizes.topBarHeight),
+			bg = "transparent",
+			active = true,
+		})
+
+		-- Minimize / Maximize state management
+		local isMinimized = false
+		local restoredSize = mainContainer.Size
+
+		local minBtn = Components.button(topBar, {
+			text = "-",
+			size = UDim2.fromOffset(32, 32),
+			position = UDim2.new(1, -74, 0.5, -16),
+			bg = "bg3",
+			textColor = "textDim",
+			onClick = function()
+				if not isMinimized then
+					isMinimized = true
+					restoredSize = mainContainer.Size
+					content.Visible = false
+					mainContainer.Size = UDim2.new(restoredSize.X.Scale, restoredSize.X.Offset, 0, Theme.sizes.topBarHeight)
+				else
+					isMinimized = false
+					mainContainer.Size = restoredSize
+					content.Visible = true
+				end
+			end,
 		})
 
 		local closeBtn = Components.button(topBar, {
@@ -1139,14 +1171,6 @@ Modules["./UI/Window"] = function()
 				end
 			end))
 		end
-
-		local content = Ui.frame(mainContainer, {
-			name = "Content",
-			size = UDim2.new(1, 0, 1, -Theme.sizes.topBarHeight),
-			position = UDim2.fromOffset(0, Theme.sizes.topBarHeight),
-			bg = "transparent",
-			active = true,
-		})
 
 		return {
 			ScreenGui = screenGui,
@@ -1657,19 +1681,30 @@ function Main.start(parent, opts)
 	Provider.setConfig(persisted)
 
 	-- Create Main Window
-	local width, height = opts.width, opts.height
+	-- Sizing logic: On mobile/compact, ~78% width, ~55% height centered with margins
+	local vw, vh = Device.viewportSize()
+	local width = opts.width
+	local height = opts.height
+	local winX = opts.x
+	local winY = opts.y
+
 	if compact then
-		local vw, vh = Device.viewportSize()
-		width = math.min(width or (vw - 16), vw - 16)
-		height = math.min(height or (vh - 16), vh - 16)
+		width = math.floor(vw * 0.78)
+		height = math.floor(vh * 0.55)
+		if winX == nil then
+			winX = math.max(10, math.floor((vw - width) / 2))
+		end
+		if winY == nil then
+			winY = math.max(10, math.floor((vh - height) / 2))
+		end
 	end
 
 	local win = Window.create(parent, {
 		title = "WHITEBLOD AI",
 		width = width or 720,
 		height = height or 520,
-		x = opts.x,
-		y = opts.y,
+		x = winX or 20,
+		y = winY or 20,
 		onClose = function() win.destroy() end,
 	})
 
