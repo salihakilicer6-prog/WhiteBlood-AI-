@@ -4,7 +4,7 @@
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
-Main.version = "v1.1.0"
+Main.version = "v1.2.0"
 
 -- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
@@ -186,7 +186,7 @@ Modules["./AI/Provider"] = function()
 		return table.concat(chars, "")
 	end
 
-	-- Multi-Provider Defaults & Supported Models
+	-- Exactly 3 Supported Providers: Google Gemini, Groq, OpenRouter
 	local providerSpecs = {
 		gemini = {
 			name = "Google Gemini",
@@ -200,43 +200,26 @@ Modules["./AI/Provider"] = function()
 			defaultModel = "llama-3.3-70b-versatile",
 			models = { "llama-3.3-70b-versatile", "llama-3.1-80b-instant", "mixtral-8x7b-32768" },
 		},
-		cerebras = {
-			name = "Cerebras",
-			baseUrl = "https://api.cerebras.ai/v1",
-			defaultModel = "llama-3.3-70b",
-			models = { "llama-3.3-70b", "llama3.1-8b" },
-		},
 		openrouter = {
 			name = "OpenRouter",
 			baseUrl = "https://openrouter.ai/api/v1",
 			defaultModel = "google/gemini-2.0-flash-001",
 			models = { "google/gemini-2.0-flash-001", "meta-llama/llama-3.3-70b-instruct", "deepseek/deepseek-chat" },
 		},
-		custom = {
-			name = "Custom / OpenAI",
-			baseUrl = "https://api.openai.com/v1",
-			defaultModel = "gpt-4o-mini",
-			models = { "gpt-4o-mini", "gpt-4o" },
-		},
 	}
 
 	local config = {
-		activeProvider = "auto", -- auto, gemini, groq, cerebras, openrouter, custom
+		activeProvider = "auto", -- auto, gemini, groq, openrouter
 		models = {
 			gemini = "gemini-2.0-flash",
 			groq = "llama-3.3-70b-versatile",
-			cerebras = "llama-3.3-70b",
 			openrouter = "google/gemini-2.0-flash-001",
-			custom = "gpt-4o-mini",
 		},
 		keys = {
 			gemini = "",
 			groq = "",
-			cerebras = "",
 			openrouter = "",
-			custom = "",
 		},
-		customBaseUrl = "https://api.openai.com/v1",
 	}
 
 	function Provider.getSpecs()
@@ -246,34 +229,30 @@ Modules["./AI/Provider"] = function()
 	function Provider.setConfig(newConfig)
 		if type(newConfig) == "table" then
 			if type(newConfig.activeProvider) == "string" then
-				config.activeProvider = newConfig.activeProvider
-			end
-			if type(newConfig.customBaseUrl) == "string" and #newConfig.customBaseUrl > 0 then
-				config.customBaseUrl = newConfig.customBaseUrl:gsub("/+$", "")
+				local act = newConfig.activeProvider:lower()
+				if act == "auto" or providerSpecs[act] then
+					config.activeProvider = act
+				else
+					config.activeProvider = "auto" -- Safe fallback for deprecated activeProvider
+				end
 			end
 			if type(newConfig.keys) == "table" then
 				for k, v in pairs(newConfig.keys) do
-					if type(v) == "string" then
+					if providerSpecs[k] and type(v) == "string" then
 						config.keys[k] = deobfuscateKey(v)
 					end
 				end
 			end
 			if type(newConfig.models) == "table" then
 				for k, v in pairs(newConfig.models) do
-					if type(v) == "string" and #v > 0 then
+					if providerSpecs[k] and type(v) == "string" and #v > 0 then
 						config.models[k] = v
 					end
 				end
 			end
-			-- Support legacy top-level config keys
+			-- Support legacy single apiKey mapping
 			if type(newConfig.apiKey) == "string" and #newConfig.apiKey > 0 then
-				config.keys.custom = deobfuscateKey(newConfig.apiKey)
-			end
-			if type(newConfig.baseUrl) == "string" and #newConfig.baseUrl > 0 then
-				config.customBaseUrl = newConfig.baseUrl:gsub("/+$", "")
-			end
-			if type(newConfig.model) == "string" and #newConfig.model > 0 then
-				config.models.custom = newConfig.model
+				config.keys.gemini = deobfuscateKey(newConfig.apiKey)
 			end
 		end
 	end
@@ -281,20 +260,15 @@ Modules["./AI/Provider"] = function()
 	function Provider.getConfig()
 		return {
 			activeProvider = config.activeProvider,
-			customBaseUrl = config.customBaseUrl,
 			models = {
 				gemini = config.models.gemini,
 				groq = config.models.groq,
-				cerebras = config.models.cerebras,
 				openrouter = config.models.openrouter,
-				custom = config.models.custom,
 			},
 			keys = {
 				gemini = config.keys.gemini,
 				groq = config.keys.groq,
-				cerebras = config.keys.cerebras,
 				openrouter = config.keys.openrouter,
-				custom = config.keys.custom,
 			},
 			model = config.models[config.activeProvider] or config.models.gemini,
 		}
@@ -303,14 +277,11 @@ Modules["./AI/Provider"] = function()
 	function Provider.getExportableConfig()
 		return {
 			activeProvider = config.activeProvider,
-			customBaseUrl = config.customBaseUrl,
 			models = config.models,
 			keys = {
 				gemini = obfuscateKey(config.keys.gemini),
 				groq = obfuscateKey(config.keys.groq),
-				cerebras = obfuscateKey(config.keys.cerebras),
 				openrouter = obfuscateKey(config.keys.openrouter),
-				custom = obfuscateKey(config.keys.custom),
 			},
 		}
 	end
@@ -364,10 +335,10 @@ Modules["./AI/Provider"] = function()
 
 		local apiKey = config.keys[provId] or ""
 		if not apiKey or #apiKey == 0 then
-			return false, spec.name .. " için API Anahtarı girilmedi.", nil, 401
+			return false, spec.name .. " için API Anahtarı tanımlanmamış.", nil, 401
 		end
 
-		local baseUrl = provId == "custom" and config.customBaseUrl or spec.baseUrl
+		local baseUrl = spec.baseUrl
 		local modelName = config.models[provId] or spec.defaultModel
 		local url = baseUrl .. "/chat/completions"
 
@@ -378,10 +349,14 @@ Modules["./AI/Provider"] = function()
 		}
 		if tools and #tools > 0 then payload.tools = tools end
 
+		-- Build headers (Gemini supports both Bearer and x-goog-api-key)
 		local headers = {
 			["Authorization"] = "Bearer " .. apiKey,
 			["Content-Type"] = "application/json",
 		}
+		if provId == "gemini" then
+			headers["x-goog-api-key"] = apiKey
+		end
 
 		local okEncode, jsonBody = pcall(JSON.encode, payload)
 		if not okEncode then
@@ -397,12 +372,18 @@ Modules["./AI/Provider"] = function()
 
 		if not success then
 			local errMsg = spec.name .. " Hatası [" .. tostring(status) .. "]"
+			if status == 400 then
+				errMsg = spec.name .. " İstek Hatası [400] (Geçersiz model veya parametre)"
+			elseif status == 401 or status == 403 then
+				errMsg = spec.name .. " Yetkilendirme Hatası [" .. tostring(status) .. "] (Geçersiz API Anahtarı)"
+			elseif status == 429 then
+				errMsg = spec.name .. " Kota / Hız Sınırı Aşıldı [429]"
+			end
+
 			if #body > 0 then
 				local okDec, dec = pcall(JSON.decode, body)
 				if okDec and type(dec) == "table" and dec.error and dec.error.message then
 					errMsg = spec.name .. " API Hatası: " .. tostring(dec.error.message)
-				else
-					errMsg = errMsg .. ": " .. string.sub(body, 1, 180)
 				end
 			end
 			return false, errMsg, nil, status
@@ -436,12 +417,15 @@ Modules["./AI/Provider"] = function()
 			return false, spec.name .. " için API Anahtarı girilmedi. Ayarlar sayfasından anahtarı ekleyin."
 		end
 
-		local baseUrl = prov == "custom" and config.customBaseUrl or spec.baseUrl
+		local baseUrl = spec.baseUrl
 		local url = baseUrl .. "/models"
 		local headers = {
 			["Authorization"] = "Bearer " .. apiKey,
 			["Content-Type"] = "application/json",
 		}
+		if prov == "gemini" then
+			headers["x-goog-api-key"] = apiKey
+		end
 
 		local success, status, body = httpRequest({
 			Url = url,
@@ -454,10 +438,12 @@ Modules["./AI/Provider"] = function()
 		else
 			if status == 401 or status == 403 then
 				return false, "Hata [" .. tostring(status) .. "]: " .. spec.name .. " Geçersiz API Anahtarı."
+			elseif status == 429 then
+				return false, "Hata [429]: " .. spec.name .. " Kota Sınırı Aşıldı."
 			elseif status == 404 then
 				return false, "Hata [404]: URL bulunamadı (" .. url .. ")."
 			else
-				return false, spec.name .. " Bağlantı Başarısız [" .. tostring(status) .. "]: " .. tostring(body)
+				return false, spec.name .. " Bağlantı Başarısız [" .. tostring(status) .. "]"
 			end
 		end
 	end
@@ -471,8 +457,8 @@ Modules["./AI/Provider"] = function()
 			return ok, content, toolCalls
 		end
 
-		-- Automatic Multi-Provider Failover Sequence
-		local sequence = { "gemini", "groq", "cerebras", "openrouter", "custom" }
+		-- Automatic Multi-Provider Failover Sequence (Gemini -> Groq -> OpenRouter)
+		local sequence = { "gemini", "groq", "openrouter" }
 		local attemptedCount = 0
 		local errorLogs = {}
 
@@ -486,12 +472,12 @@ Modules["./AI/Provider"] = function()
 					return true, content, toolCalls
 				end
 
-				-- Halt failover on invalid key / authentication error
+				-- Immediately halt failover on invalid API key / 401/403 auth error
 				if status == 401 or status == 403 then
 					return false, "Geçersiz API Anahtarı [" .. tostring(status) .. "] (" .. providerSpecs[provId].name .. "): Lütfen API anahtarınızı kontrol edin.", nil
 				end
 
-				-- Quota limit (429) or Server error (5xx) or Network timeout: Log & Try next provider
+				-- Quota limit (429) or Server error (5xx) or Network timeout: Log provider attempt & Try next provider
 				table.insert(errorLogs, providerSpecs[provId].name .. " [" .. tostring(status) .. "]: " .. tostring(content))
 			end
 		end
@@ -1409,7 +1395,7 @@ Modules["./UI/Views/Settings"] = function()
 		Ui.listLayoutVertical(scroll, 10, Enum.HorizontalAlignment.Left)
 
 		Ui.text(scroll, {
-			text = "WHITEBLOD AI - Çoklu Sağlayıcı Yapılandırması",
+			text = "WHITEBLOD AI - Yapılandırma",
 			fg = "accent",
 			textSize = Theme.sizes.fontSizeTitle,
 			font = "bold",
@@ -1418,21 +1404,22 @@ Modules["./UI/Views/Settings"] = function()
 		})
 
 		local cfg = Provider.getConfig()
-		local specs = Provider.getSpecs()
 
-		-- Active Provider Mode Selection
+		-- 3 Supported Provider Options
 		Ui.text(scroll, { text = "Aktif AI Sağlayıcısı Seçimi:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 
 		local provOptions = {
-			{ id = "auto", label = "⚡ Otomatik (Sırayla Otomatik Geçiş)" },
+			{ id = "auto", label = "⚡ Otomatik (Gemini → Groq → OpenRouter)" },
 			{ id = "gemini", label = "Google Gemini" },
 			{ id = "groq", label = "Groq" },
-			{ id = "cerebras", label = "Cerebras" },
 			{ id = "openrouter", label = "OpenRouter" },
-			{ id = "custom", label = "Custom / OpenAI" },
 		}
 
 		local currentActive = cfg.activeProvider or "auto"
+		if currentActive ~= "gemini" and currentActive ~= "groq" and currentActive ~= "openrouter" then
+			currentActive = "auto"
+		end
+
 		local activeBtnLabel = Ui.text(scroll, {
 			text = "Seçili: " .. currentActive:upper(),
 			fg = "accent",
@@ -1447,7 +1434,7 @@ Modules["./UI/Views/Settings"] = function()
 		for _, item in ipairs(provOptions) do
 			Components.button(selectRow, {
 				text = item.id:sub(1, 4):upper(),
-				size = UDim2.fromOffset(50, 32),
+				size = UDim2.fromOffset(60, 32),
 				bg = (item.id == currentActive) and "accent" or "bg3",
 				textColor = (item.id == currentActive) and "bg" or "text",
 				onClick = function()
@@ -1457,8 +1444,8 @@ Modules["./UI/Views/Settings"] = function()
 			})
 		end
 
-		-- API Keys per provider
-		Ui.text(scroll, { text = "Sağlayıcı API Anahtarları (Her sağlayıcı için ayrı):", fg = "accent", textSize = Theme.sizes.fontSizeSmall, font = "bold", alignX = Enum.TextXAlignment.Left })
+		-- API Keys
+		Ui.text(scroll, { text = "Sağlayıcı API Anahtarları:", fg = "accent", textSize = Theme.sizes.fontSizeSmall, font = "bold", alignX = Enum.TextXAlignment.Left })
 
 		Ui.text(scroll, { text = "Google Gemini API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 		local geminiKeyInput = Components.textInput(scroll, { placeholder = "AIzaSy...", text = cfg.keys.gemini, size = UDim2.new(1, 0, 0, 38) })
@@ -1466,17 +1453,8 @@ Modules["./UI/Views/Settings"] = function()
 		Ui.text(scroll, { text = "Groq API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 		local groqKeyInput = Components.textInput(scroll, { placeholder = "gsk_...", text = cfg.keys.groq, size = UDim2.new(1, 0, 0, 38) })
 
-		Ui.text(scroll, { text = "Cerebras API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
-		local cerebrasKeyInput = Components.textInput(scroll, { placeholder = "csk-...", text = cfg.keys.cerebras, size = UDim2.new(1, 0, 0, 38) })
-
 		Ui.text(scroll, { text = "OpenRouter API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 		local openrouterKeyInput = Components.textInput(scroll, { placeholder = "sk-or-v1-...", text = cfg.keys.openrouter, size = UDim2.new(1, 0, 0, 38) })
-
-		Ui.text(scroll, { text = "Custom / OpenAI API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
-		local customKeyInput = Components.textInput(scroll, { placeholder = "sk-...", text = cfg.keys.custom, size = UDim2.new(1, 0, 0, 38) })
-
-		Ui.text(scroll, { text = "Custom Base URL:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
-		local customUrlInput = Components.textInput(scroll, { placeholder = "https://api.openai.com/v1", text = cfg.customBaseUrl, size = UDim2.new(1, 0, 0, 38) })
 
 		-- Status Display Box
 		local statusBox = Ui.frame(scroll, {
@@ -1487,7 +1465,7 @@ Modules["./UI/Views/Settings"] = function()
 			radius = Theme.sizes.radius,
 		})
 		local statusLabel = Ui.text(statusBox, {
-			text = "Durum: Çoklu sağlayıcı sistemi hazır.",
+			text = "Durum: Sağlayıcı sistemi hazır.",
 			fg = "textDim",
 			textSize = Theme.sizes.fontSizeSmall,
 			alignX = Enum.TextXAlignment.Left,
@@ -1521,13 +1499,10 @@ Modules["./UI/Views/Settings"] = function()
 
 			Provider.setConfig({
 				activeProvider = currentActive,
-				customBaseUrl = customUrlInput.box.Text,
 				keys = {
 					gemini = geminiKeyInput.box.Text,
 					groq = groqKeyInput.box.Text,
-					cerebras = cerebrasKeyInput.box.Text,
 					openrouter = openrouterKeyInput.box.Text,
-					custom = customKeyInput.box.Text,
 				},
 			})
 
@@ -1541,13 +1516,10 @@ Modules["./UI/Views/Settings"] = function()
 		saveBtn.Activated:Connect(function()
 			local updatedConfig = {
 				activeProvider = currentActive,
-				customBaseUrl = customUrlInput.box.Text,
 				keys = {
 					gemini = geminiKeyInput.box.Text,
 					groq = groqKeyInput.box.Text,
-					cerebras = cerebrasKeyInput.box.Text,
 					openrouter = openrouterKeyInput.box.Text,
-					custom = customKeyInput.box.Text,
 				},
 			}
 			Provider.setConfig(updatedConfig)
@@ -1559,7 +1531,7 @@ Modules["./UI/Views/Settings"] = function()
 				FS.write("opencode/config.json", jsonStr)
 			end)
 
-			statusLabel.Text = "Çoklu sağlayıcı ayarları güvenli şekilde kaydedildi!"
+			statusLabel.Text = "Ayarlar başarıyla kaydedildi!"
 			statusLabel.TextColor3 = Theme.color("accent")
 			if opts and opts.onSave then opts.onSave() end
 		end)
@@ -1690,7 +1662,7 @@ function Main.start(parent, opts)
 	-- ---- Create Views ----
 	local chat = ChatView.create(viewHost, {
 		placeholder = "WHITEBLOD AI'a komut veya soru yazın...",
-		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nÇoklu Sağlayıcı Desteği (Gemini, Groq, Cerebras, OpenRouter, Custom).\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
+		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nDesteklenen AI Sağlayıcıları: Google Gemini, Groq, OpenRouter.\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
 	})
 	views.chat = chat
 
