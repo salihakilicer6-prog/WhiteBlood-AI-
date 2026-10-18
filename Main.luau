@@ -1,26 +1,50 @@
 --!strict
--- Main.luau.txt
+-- Main.luau
 -- WHITEBLOD AI Bootstrap & Entry Point
 -- Simple, mobile-friendly AI assistant interface for Roblox Studio Lite.
 
 local Main = {}
 Main.version = "v1.0.0"
 
--- Virtual module registry for standalone loadstring support
+-- Virtual module registry and singleton cache table for standalone support
 local Modules = {}
+local moduleCache = {}
+
+local function requireModule(modulePath)
+	if moduleCache[modulePath] then
+		return moduleCache[modulePath]
+	end
+	if Modules[modulePath] then
+		local m = Modules[modulePath]()
+		moduleCache[modulePath] = m
+		return m
+	end
+	if typeof(require) == "function" then
+		return require(modulePath)
+	end
+	error("Module not found: " .. tostring(modulePath))
+end
 
 -- 1. Core/JSON
 Modules["./Core/JSON"] = function()
-	local HttpService = game:GetService("HttpService")
+	local okGame, gameObj = pcall(function() return game end)
+	local HttpService = (okGame and gameObj) and gameObj:GetService("HttpService") or nil
+
 	local JSON = {}
 	function JSON.encode(value)
-		local ok, result = pcall(function() return HttpService:JSONEncode(value) end)
-		return ok and result or error("JSON encode error: " .. tostring(result))
+		if HttpService then
+			local ok, result = pcall(function() return HttpService:JSONEncode(value) end)
+			return ok and result or error("JSON encode error: " .. tostring(result))
+		end
+		return "{}"
 	end
 	function JSON.decode(raw)
 		if not raw or raw == "" then return nil end
-		local ok, result = pcall(function() return HttpService:JSONDecode(raw) end)
-		return ok and result or error("JSON decode error: " .. tostring(result))
+		if HttpService then
+			local ok, result = pcall(function() return HttpService:JSONDecode(raw) end)
+			return ok and result or error("JSON decode error: " .. tostring(result))
+		end
+		return nil
 	end
 	return JSON
 end
@@ -94,18 +118,27 @@ end
 
 -- 3. Core/Device
 Modules["./Core/Device"] = function()
-	local UserInputService = game:GetService("UserInputService")
 	local Device = {}
 	function Device.viewportSize()
-		local camera = workspace.CurrentCamera
-		if camera then
-			local viewport = camera.ViewportSize
-			return viewport.X, viewport.Y
+		local okGame, gameObj = pcall(function() return game end)
+		if okGame and gameObj then
+			local camera = workspace.CurrentCamera
+			if camera then
+				local viewport = camera.ViewportSize
+				return viewport.X, viewport.Y
+			end
 		end
 		return 800, 600
 	end
 	function Device.isTouch()
-		return UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+		local okGame, gameObj = pcall(function() return game end)
+		if okGame and gameObj then
+			local UserInputService = gameObj:GetService("UserInputService")
+			if UserInputService then
+				return UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+			end
+		end
+		return false
 	end
 	function Device.isCompact()
 		local vx, vy = Device.viewportSize()
@@ -123,8 +156,7 @@ end
 
 -- 5. AI/Provider
 Modules["./AI/Provider"] = function()
-	local HttpService = game:GetService("HttpService")
-	local JSON = Modules["./Core/JSON"]()
+	local JSON = requireModule("./Core/JSON")
 
 	local Provider = {}
 	local config = {
@@ -175,6 +207,12 @@ Modules["./AI/Provider"] = function()
 			end
 		end
 
+		local okGame, gameObj = pcall(function() return game end)
+		if not okGame or not gameObj then
+			return false, 0, "Roblox environment not found"
+		end
+
+		local HttpService = gameObj:GetService("HttpService")
 		local ok, result = pcall(function()
 			return HttpService:RequestAsync({
 				Url = options.Url,
@@ -296,8 +334,8 @@ end
 
 -- 6. Agent/Session
 Modules["./Agent/Session"] = function()
-	local FS = Modules["./Core/FS"]()
-	local JSON = Modules["./Core/JSON"]()
+	local FS = requireModule("./Core/FS")
+	local JSON = requireModule("./Core/JSON")
 	local Session = {}
 
 	function Session.new(name, model)
@@ -337,7 +375,7 @@ end
 
 -- 7. Agent/Skill
 Modules["./Agent/Skill"] = function()
-	local FS = Modules["./Core/FS"]()
+	local FS = requireModule("./Core/FS")
 	local Skill = {}
 
 	local defaultTools = {
@@ -425,8 +463,6 @@ Modules["./Agent/Skill"] = function()
 
 				if type(args.size) == "table" and #args.size >= 3 then
 					part.Size = Vector3.new(args.size[1], args.size[2], args.size[3])
-				else
-					part.Size = Vector3.new(4, 1, 2)
 				end
 
 				if type(args.color) == "table" and #args.color >= 3 then
@@ -497,9 +533,9 @@ end
 
 -- 8. Agent/Agent
 Modules["./Agent/Agent"] = function()
-	local Provider = Modules["./AI/Provider"]()
-	local Skill = Modules["./Agent/Skill"]()
-	local JSON = Modules["./Core/JSON"]()
+	local Provider = requireModule("./AI/Provider")
+	local Skill = requireModule("./Agent/Skill")
+	local JSON = requireModule("./Core/JSON")
 
 	local Agent = {}
 
@@ -637,7 +673,7 @@ Modules["./UI/Theme"] = function()
 end
 
 Modules["./UI/Ui"] = function()
-	local Theme = Modules["./UI/Theme"]()
+	local Theme = requireModule("./UI/Theme")
 	local Ui = {}
 	function Ui.full() return UDim2.new(1, 0, 1, 0) end
 	function Ui.new(className, parent, props)
@@ -721,8 +757,8 @@ Modules["./UI/Ui"] = function()
 end
 
 Modules["./UI/Components"] = function()
-	local Theme = Modules["./UI/Theme"]()
-	local Ui = Modules["./UI/Ui"]()
+	local Theme = requireModule("./UI/Theme")
+	local Ui = requireModule("./UI/Ui")
 	local Components = {}
 
 	function Components.button(parent, opts)
@@ -828,9 +864,9 @@ Modules["./UI/Components"] = function()
 end
 
 Modules["./UI/Window"] = function()
-	local Theme = Modules["./UI/Theme"]()
-	local Ui = Modules["./UI/Ui"]()
-	local Components = Modules["./UI/Components"]()
+	local Theme = requireModule("./UI/Theme")
+	local Ui = requireModule("./UI/Ui")
+	local Components = requireModule("./UI/Components")
 	local Window = {}
 
 	function Window.create(parent, opts)
@@ -909,9 +945,9 @@ Modules["./UI/Markdown"] = function()
 end
 
 Modules["./UI/Views/Chat"] = function()
-	local Theme = Modules["./UI/Theme"]()
-	local Ui = Modules["./UI/Ui"]()
-	local Components = Modules["./UI/Components"]()
+	local Theme = requireModule("./UI/Theme")
+	local Ui = requireModule("./UI/Ui")
+	local Components = requireModule("./UI/Components")
 	local ChatView = {}
 
 	function ChatView.create(parent, opts)
@@ -1022,9 +1058,9 @@ Modules["./UI/Views/Chat"] = function()
 end
 
 Modules["./UI/Views/Console"] = function()
-	local Theme = Modules["./UI/Theme"]()
-	local Ui = Modules["./UI/Ui"]()
-	local Components = Modules["./UI/Components"]()
+	local Theme = requireModule("./UI/Theme")
+	local Ui = requireModule("./UI/Ui")
+	local Components = requireModule("./UI/Components")
 	local ConsoleView = {}
 
 	function ConsoleView.create(parent, opts)
@@ -1056,10 +1092,10 @@ Modules["./UI/Views/Console"] = function()
 end
 
 Modules["./UI/Views/Files"] = function()
-	local Theme = Modules["./UI/Theme"]()
-	local Ui = Modules["./UI/Ui"]()
-	local Components = Modules["./UI/Components"]()
-	local FS = Modules["./Core/FS"]()
+	local Theme = requireModule("./UI/Theme")
+	local Ui = requireModule("./UI/Ui")
+	local Components = requireModule("./UI/Components")
+	local FS = requireModule("./Core/FS")
 	local FilesView = {}
 
 	function FilesView.create(parent, opts)
@@ -1108,10 +1144,10 @@ Modules["./UI/Views/Files"] = function()
 end
 
 Modules["./UI/Views/Editor"] = function()
-	local Theme = Modules["./UI/Theme"]()
-	local Ui = Modules["./UI/Ui"]()
-	local Components = Modules["./UI/Components"]()
-	local FS = Modules["./Core/FS"]()
+	local Theme = requireModule("./UI/Theme")
+	local Ui = requireModule("./UI/Ui")
+	local Components = requireModule("./UI/Components")
+	local FS = requireModule("./Core/FS")
 	local EditorView = {}
 
 	function EditorView.create(parent, opts)
@@ -1175,12 +1211,12 @@ Modules["./UI/Views/Editor"] = function()
 end
 
 Modules["./UI/Views/Settings"] = function()
-	local Theme = Modules["./UI/Theme"]()
-	local Ui = Modules["./UI/Ui"]()
-	local Components = Modules["./UI/Components"]()
-	local Provider = Modules["./AI/Provider"]()
-	local FS = Modules["./Core/FS"]()
-	local JSON = Modules["./Core/JSON"]()
+	local Theme = requireModule("./UI/Theme")
+	local Ui = requireModule("./UI/Ui")
+	local Components = requireModule("./UI/Components")
+	local Provider = requireModule("./AI/Provider")
+	local FS = requireModule("./Core/FS")
+	local JSON = requireModule("./Core/JSON")
 	local SettingsView = {}
 
 	function SettingsView.create(parent, opts)
@@ -1287,22 +1323,6 @@ Modules["./UI/Views/Settings"] = function()
 	end
 
 	return SettingsView
-end
-
--- Module instance cache table
-local moduleCache = {}
-
--- Require helper resolving embedded modules or falling back to environment
-local function requireModule(modulePath)
-	if moduleCache[modulePath] then
-		return moduleCache[modulePath]
-	end
-	if Modules[modulePath] then
-		local m = Modules[modulePath]()
-		moduleCache[modulePath] = m
-		return m
-	end
-	return require(modulePath)
 end
 
 -- Load Core & UI Modules
@@ -1458,7 +1478,6 @@ function Main.start(parent, opts)
 			return
 		end
 		isBusy = true
-		chat.addMessage("assistant", "")
 		table.insert(history, { role = "user", content = text })
 		chat.setStreaming(true)
 
@@ -1506,11 +1525,12 @@ function Main.start(parent, opts)
 end
 
 -- Auto-start if loaded as standalone script in Roblox workspace
-if typeof(game) == "Instance" then
-	local okRun, runService = pcall(function() return game:GetService("RunService") end)
+local okGame, gameObj = pcall(function() return rawget(getfenv(), "game") or game end)
+if okGame and gameObj and typeof(gameObj) == "Instance" then
+	local okRun, runService = pcall(function() return gameObj:GetService("RunService") end)
 	if okRun and runService and (runService:IsStudio() or runService:IsClient()) then
 		pcall(function()
-			local player = game:GetService("Players").LocalPlayer
+			local player = gameObj:GetService("Players").LocalPlayer
 			if player then
 				local playerGui = player:FindFirstChildOfClass("PlayerGui")
 				if playerGui then
