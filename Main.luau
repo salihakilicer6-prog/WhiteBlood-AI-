@@ -577,6 +577,50 @@ Modules["./Agent/Skill"] = function()
 		task = "task Kütüphanesi: task.wait(), task.spawn(), task.defer() ve task.delay() ile güvenli zamanlama sağlar. Eski wait() yerine task.wait() tercih edilmelidir.",
 	}
 
+	-- Helper to resolve Instance by path string safely in Roblox runtime
+	local function resolveInstance(pathStr)
+		if not pathStr or #pathStr == 0 then return nil end
+		local okGame, gameObj = pcall(function() return (rawget(getfenv(), "game") or game) end)
+		if not okGame or not gameObj or typeof(gameObj) ~= "Instance" then return nil end
+
+		local cleanPath = pathStr:gsub("^game%.", "")
+		if cleanPath == "game" then return gameObj end
+
+		local parts = {}
+		for part in cleanPath:gmatch("[^%.]+") do
+			table.insert(parts, part)
+		end
+
+		local current = gameObj
+		for _, name in ipairs(parts) do
+			if current then
+				local okFind, found = pcall(function()
+					return current:FindFirstChild(name) or (current:IsA("ServiceProvider") and current:GetService(name))
+				end)
+				if okFind and found then
+					current = found
+				else
+					local okChild, children = pcall(function() return current:GetChildren() end)
+					local matched = nil
+					if okChild and children then
+						for _, child in ipairs(children) do
+							if child.Name:lower() == name:lower() or child.ClassName:lower() == name:lower() then
+								matched = child
+								break
+							end
+						end
+					end
+					if matched then
+						current = matched
+					else
+						return nil
+					end
+				end
+			end
+		end
+		return current
+	end
+
 	local defaultTools = {
 		{
 			type = "function",
@@ -589,6 +633,65 @@ Modules["./Agent/Skill"] = function()
 						query = { type = "string", description = "Aranacak Roblox servisi, sınıfı veya kavramı (örn. TweenService, Lighting, task, UserInputService)" },
 					},
 					required = { "query" },
+				},
+			},
+		},
+		{
+			type = "function",
+			["function"] = {
+				name = "explore_instances",
+				description = "Oyun içi servislerdeki (Workspace, Players, Lighting, ReplicatedStorage vb.) nesne hiyerarşisini ve alt elemanları inceler.",
+				parameters = {
+					type = "object",
+					properties = {
+						path = { type = "string", description = "İncelenecek servis veya nesne yolu (örn: 'Workspace', 'Lighting', 'Players', 'ReplicatedStorage'). Varsayılan 'Workspace'." },
+					},
+				},
+			},
+		},
+		{
+			type = "function",
+			["function"] = {
+				name = "get_instance_info",
+				description = "Seçilen Roblox nesnesinin detaylı sınıf, yol, konum, boyut ve özellik bilgilerini getirir.",
+				parameters = {
+					type = "object",
+					properties = {
+						path = { type = "string", description = "Hedef nesne yolu (örn: 'Workspace.Baseplate', 'Lighting', 'Players')." },
+					},
+					required = { "path" },
+				},
+			},
+		},
+		{
+			type = "function",
+			["function"] = {
+				name = "search_instances",
+				description = "Oyun içi nesneleri isim veya sınıfa (ClassName) göre arar. Performans için sonuç sayısı sınırlandırılmıştır.",
+				parameters = {
+					type = "object",
+					properties = {
+						query = { type = "string", description = "Aranacak metin veya sınıf adı (örn: 'Baseplate', 'Part', 'SpawnLocation', 'Atmosphere')." },
+						rootPath = { type = "string", description = "Aramanın yapılacağı kök servis (örn: 'Workspace', 'Lighting'). Varsayılan 'Workspace'." },
+						limit = { type = "number", description = "Maksimum sonuç sayısı (varsayılan 30)." },
+					},
+					required = { "query" },
+				},
+			},
+		},
+		{
+			type = "function",
+			["function"] = {
+				name = "modify_instance_property",
+				description = "İstemci tarafında erişilebilir oyun nesnelerinin özelliklerini (Transparency, Color, Size, Position, Anchored, ClockTime vb.) güvenli şekilde değiştirir.",
+				parameters = {
+					type = "object",
+					properties = {
+						path = { type = "string", description = "Değiştirilecek nesne yolu (örn: 'Workspace.Baseplate')." },
+						property = { type = "string", description = "Özellik adı (örn: 'Transparency', 'Color', 'Anchored', 'CanCollide', 'ClockTime', 'Brightness')." },
+						value = { type = "string", description = "Yeni değer (örn: '0.5', 'true', '255,0,0', '14')." },
+					},
+					required = { "path", "property", "value" },
 				},
 			},
 		},
@@ -670,6 +773,140 @@ Modules["./Agent/Skill"] = function()
 				end
 			end
 			return true, "📖 Roblox Creator Dokümantasyon:\nRoblox API Genel Bilgisi: Servislere her zaman game:GetService('ServisAdi') ile erişin. Nesne erişimlerinde FindFirstChild veya FindFirstChildOfClass tercih edin."
+
+		elseif toolName == "explore_instances" then
+			local path = (args and args.path and #args.path > 0) and args.path or "Workspace"
+			local target = resolveInstance(path)
+			if not target then
+				return false, "Erişim Hatası: '" .. tostring(path) .. "' yolu ile eşleşen oyun nesnesi bulunamadı."
+			end
+
+			local okChild, children = pcall(function() return target:GetChildren() end)
+			if not okChild or not children then
+				return false, "Erişim Engeli: '" .. tostring(path) .. "' nesnesinin alt elemanları okunamadı."
+			end
+
+			local lines = { "🔍 Nesne Keşfi - " .. target:GetFullName() .. " (Sınıf: " .. target.ClassName .. " | Alt Eleman Sayısı: " .. tostring(#children) .. "):" }
+			local maxDisplay = math.min(#children, 40)
+			for i = 1, maxDisplay do
+				local child = children[i]
+				local childCount = 0
+				pcall(function() childCount = #child:GetChildren() end)
+				table.insert(lines, string.format("  [%d] %s (%s) - Alt Eleman: %d", i, child.Name, child.ClassName, childCount))
+			end
+
+			if #children > maxDisplay then
+				table.insert(lines, string.format("  ... (%d nesne daha var, performans için listelenmedi)", #children - maxDisplay))
+			end
+
+			return true, table.concat(lines, "\n")
+
+		elseif toolName == "get_instance_info" then
+			local path = args and args.path or ""
+			local target = resolveInstance(path)
+			if not target then
+				return false, "Nesne Bulunamadı: '" .. tostring(path) .. "' yolu mevcut oyun ortamında bulunamadı."
+			end
+
+			local details = {
+				"📌 Nesne Bilgisi:",
+				"• Ad: " .. target.Name,
+				"• Sınıf (ClassName): " .. target.ClassName,
+				"• Tam Yol: " .. target:GetFullName(),
+				"• Üst Nesne (Parent): " .. (target.Parent and target.Parent.Name or "Yok"),
+			}
+
+			if target:IsA("BasePart") then
+				pcall(function()
+					table.insert(details, "• Konum (Position): " .. tostring(target.Position))
+					table.insert(details, "• Boyut (Size): " .. tostring(target.Size))
+					table.insert(details, "• Renk (Color): " .. tostring(target.Color))
+					table.insert(details, "• Şeffaflık (Transparency): " .. tostring(target.Transparency))
+					table.insert(details, "• Sabitlenmiş (Anchored): " .. tostring(target.Anchored))
+					table.insert(details, "• Çarpışma (CanCollide): " .. tostring(target.CanCollide))
+					table.insert(details, "• Materyal: " .. tostring(target.Material.Name))
+				end)
+			elseif target:IsA("Lighting") then
+				pcall(function()
+					table.insert(details, "• Parlaklık (Brightness): " .. tostring(target.Brightness))
+					table.insert(details, "• Saat (ClockTime): " .. tostring(target.ClockTime))
+					table.insert(details, "• Sis Bitişi (FogEnd): " .. tostring(target.FogEnd))
+				end)
+			end
+
+			return true, table.concat(details, "\n")
+
+		elseif toolName == "search_instances" then
+			local query = (args and args.query or ""):lower()
+			if #query == 0 then return false, "Lütfen bir arama sorgusu girin." end
+
+			local rootPath = (args and args.rootPath and #args.rootPath > 0) and args.rootPath or "Workspace"
+			local limit = (args and tonumber(args.limit)) or 30
+			local root = resolveInstance(rootPath)
+			if not root then
+				return false, "Kök Nesne Bulunamadı: '" .. tostring(rootPath) .. "' bulunamadı."
+			end
+
+			local results = {}
+			local function searchRecursive(inst)
+				if #results >= limit then return end
+				local okDesc, descendants = pcall(function() return inst:GetDescendants() end)
+				if okDesc and descendants then
+					for _, item in ipairs(descendants) do
+						if #results >= limit then break end
+						if item.Name:lower():find(query, 1, true) or item.ClassName:lower():find(query, 1, true) then
+							table.insert(results, "• " .. item:GetFullName() .. " (" .. item.ClassName .. ")")
+						end
+					end
+				end
+			end
+
+			searchRecursive(root)
+
+			if #results == 0 then
+				return true, "🔍 Arama Sonucu: '" .. query .. "' ifadesine uygun nesne bulunamadı (" .. rootPath .. " içinde)."
+			end
+
+			local summary = "🔍 Arama Sonuçları ('" .. query .. "' - Maksimum " .. limit .. " sonuç):\n" .. table.concat(results, "\n")
+			return true, summary
+
+		elseif toolName == "modify_instance_property" then
+			local path = args and args.path or ""
+			local propName = args and args.property or ""
+			local valStr = args and tostring(args.value) or ""
+
+			local target = resolveInstance(path)
+			if not target then
+				return false, "Hata: '" .. tostring(path) .. "' yolu ile nesne bulunamadı."
+			end
+
+			local disclaimer = "\n⚠️ NOT: İstemci tarafında değişiklik uygulandı (Sunucuya kaydedilmez, sunucu yetki bypassı yapmaz)."
+
+			local ok, err = pcall(function()
+				if propName == "Transparency" or propName == "Brightness" or propName == "ClockTime" or propName == "FogEnd" then
+					local num = tonumber(valStr)
+					if not num then error("Geçersiz sayısal değer: " .. valStr) end
+					target[propName] = num
+				elseif propName == "Anchored" or propName == "CanCollide" then
+					local boolVal = (valStr:lower() == "true" or valStr == "1")
+					target[propName] = boolVal
+				elseif propName == "Color" then
+					local r, g, b = valStr:match("(%d+)%s*,%s*(%d+)%s*,%s*(%d+)")
+					if r and g and b then
+						target.Color = Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
+					else
+						error("Renk formatı 'R,G,B' (örn: 255,0,0) olmalıdır.")
+					end
+				else
+					target[propName] = valStr
+				end
+			end)
+
+			if ok then
+				return true, "✅ Değişiklik Uygulandı: " .. target.Name .. "." .. propName .. " = " .. valStr .. disclaimer
+			else
+				return false, "❌ Değişiklik Başarısız [" .. propName .. "]: " .. tostring(err)
+			end
 
 		elseif toolName == "create_part" then
 			local ok, result = pcall(function()
@@ -768,6 +1005,10 @@ Modules["./Agent/Skill"] = function()
 	function Skill.list()
 		return {
 			{ name = "search_roblox_docs", description = "Roblox Creator API dokümantasyonunu arar." },
+			{ name = "explore_instances", description = "Oyun içi servislerdeki nesne hiyerarşisini inceler." },
+			{ name = "get_instance_info", description = "Roblox nesnesinin detaylı bilgilerini getirir." },
+			{ name = "search_instances", description = "Oyun içi nesneleri arar." },
+			{ name = "modify_instance_property", description = "Nesne özelliklerini güvenli şekilde değiştirir." },
 			{ name = "create_part", description = "Roblox Workspace objesi oluşturur." },
 			{ name = "run_luau", description = "Roblox Studio içinde Luau kodu çalıştırır." },
 			{ name = "read_file", description = "Dosya oku." },
