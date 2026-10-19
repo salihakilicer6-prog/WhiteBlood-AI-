@@ -186,7 +186,7 @@ Modules["./AI/Provider"] = function()
 		return table.concat(chars, "")
 	end
 
-	-- Supported Providers: Google Gemini, Groq, OpenRouter, Big Pickle (OpenCode Zen)
+	-- Supported Providers: Google Gemini, Groq, OpenRouter,
 	local providerSpecs = {
 		gemini = {
 			name = "Google Gemini",
@@ -206,27 +206,19 @@ Modules["./AI/Provider"] = function()
 			defaultModel = "google/gemini-3.8-flash",
 			models = { "google/gemini-3.8-flash", "meta-llama/llama-3.3-70b-instruct", "deepseek/deepseek-chat" },
 		},
-		bigpickle = {
-			name = "Big Pickle (OpenCode Zen)",
-			baseUrl = "https://opencode.ai/zen/v1",
-			defaultModel = "big-pickle",
-			models = { "big-pickle" },
-		},
 	}
 
 	local config = {
-		activeProvider = "auto", -- auto, gemini, groq, openrouter, bigpickle
+		activeProvider = "auto", -- auto, gemini, groq, openrouter
 		models = {
 			gemini = "gemini-3.8-flash",
 			groq = "openai/gpt-oss-120b",
 			openrouter = "google/gemini-3.8-flash",
-			bigpickle = "big-pickle",
 		},
 		keys = {
 			gemini = "",
 			groq = "",
 			openrouter = "",
-			bigpickle = "",
 		},
 	}
 
@@ -279,13 +271,11 @@ Modules["./AI/Provider"] = function()
 				gemini = config.models.gemini,
 				groq = config.models.groq,
 				openrouter = config.models.openrouter,
-				bigpickle = config.models.bigpickle,
 			},
 			keys = {
 				gemini = config.keys.gemini,
 				groq = config.keys.groq,
 				openrouter = config.keys.openrouter,
-				bigpickle = config.keys.bigpickle,
 			},
 			model = config.models[config.activeProvider] or config.models.gemini,
 		}
@@ -299,7 +289,6 @@ Modules["./AI/Provider"] = function()
 				gemini = obfuscateKey(config.keys.gemini),
 				groq = obfuscateKey(config.keys.groq),
 				openrouter = obfuscateKey(config.keys.openrouter),
-				bigpickle = obfuscateKey(config.keys.bigpickle),
 			},
 		}
 	end
@@ -396,11 +385,7 @@ Modules["./AI/Provider"] = function()
 			elseif status == 401 then
 				errMsg = spec.name .. " Yetkilendirme Hatası [401] (Geçersiz API Anahtarı)"
 			elseif status == 403 then
-				if provId == "bigpickle" then
-					errMsg = spec.name .. " İzin Hatası [403] (OpenCode Zen servisi harici bağlantılara kapalı veya yetkisiz istemci)"
-				else
-					errMsg = spec.name .. " Yetkilendirme Hatası [403] (Erişim Reddedildi / Geçersiz API Anahtarı)"
-				end
+				errMsg = spec.name .. " Yetkilendirme Hatası [403] (Erişim Reddedildi / Geçersiz API Anahtarı)"
 			elseif status == 404 then
 				errMsg = spec.name .. " Model Bulunamadı [404] (Model Kimliği: '" .. tostring(modelName) .. "')"
 			elseif status == 429 then
@@ -438,7 +423,7 @@ Modules["./AI/Provider"] = function()
 		local prov = provId or config.activeProvider
 
 		if prov == "auto" then
-			local sequence = { "gemini", "groq", "openrouter", "bigpickle" }
+			local sequence = { "gemini", "groq", "openrouter" }
 			local logs = {}
 			local testedAny = false
 
@@ -488,7 +473,7 @@ Modules["./AI/Provider"] = function()
 			return ok, content, toolCalls
 		end
 
-		local sequence = { "gemini", "groq", "openrouter", "bigpickle" }
+		local sequence = { "gemini", "groq", "openrouter" }
 		local attemptedCount = 0
 		local errorLogs = {}
 
@@ -2150,15 +2135,14 @@ Modules["./UI/Views/Settings"] = function()
 		Ui.text(scroll, { text = "Aktif AI Sağlayıcısı Seçimi:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 
 		local provOptions = {
-			{ id = "auto", label = "⚡ Otomatik (Gemini → Groq → OpenRouter → Big Pickle)" },
+			{ id = "auto", label = "⚡ Otomatik (Gemini → Groq → OpenRouter)" },
 			{ id = "gemini", label = "Google Gemini (gemini-3.8-flash)" },
 			{ id = "groq", label = "Groq" },
 			{ id = "openrouter", label = "OpenRouter" },
-			{ id = "bigpickle", label = "Big Pickle (OpenCode Zen)" },
 		}
 
 		local currentActive = cfg.activeProvider or "auto"
-		if currentActive ~= "gemini" and currentActive ~= "groq" and currentActive ~= "openrouter" and currentActive ~= "bigpickle" then
+		if currentActive ~= "gemini" and currentActive ~= "groq" and currentActive ~= "openrouter" then
 			currentActive = "auto"
 		end
 
@@ -2198,8 +2182,7 @@ Modules["./UI/Views/Settings"] = function()
 		Ui.text(scroll, { text = "OpenRouter API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
 		local openrouterKeyInput = Components.textInput(scroll, { placeholder = "sk-or-v1-...", text = cfg.keys.openrouter, size = UDim2.new(1, 0, 0, 38) })
 
-		Ui.text(scroll, { text = "Big Pickle (OpenCode Zen) API Key:", fg = "textDim", textSize = Theme.sizes.fontSizeSmall, alignX = Enum.TextXAlignment.Left })
-		local bigpickleKeyInput = Components.textInput(scroll, { placeholder = "zen_...", text = cfg.keys.bigpickle, size = UDim2.new(1, 0, 0, 38) })
+
 
 		-- Status Display Box
 		local statusBox = Ui.frame(scroll, {
@@ -2248,7 +2231,6 @@ Modules["./UI/Views/Settings"] = function()
 					gemini = geminiKeyInput.box.Text,
 					groq = groqKeyInput.box.Text,
 					openrouter = openrouterKeyInput.box.Text,
-					bigpickle = bigpickleKeyInput.box.Text,
 				},
 			})
 
@@ -2266,7 +2248,6 @@ Modules["./UI/Views/Settings"] = function()
 					gemini = geminiKeyInput.box.Text,
 					groq = groqKeyInput.box.Text,
 					openrouter = openrouterKeyInput.box.Text,
-					bigpickle = bigpickleKeyInput.box.Text,
 				},
 			}
 			Provider.setConfig(updatedConfig)
@@ -2420,7 +2401,7 @@ function Main.start(parent, opts)
 	-- ---- Create Views ----
 	local chat = ChatView.create(viewHost, {
 		placeholder = "WHITEBLOD AI'a komut veya soru yazın...",
-		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nDesteklenen AI Sağlayıcıları: Google Gemini (gemini-3.8-flash), Groq, OpenRouter, Big Pickle (OpenCode Zen).\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
+		greeting = "**WHITEBLOD AI** - Roblox Studio Lite AI Asistanı.\n\nDesteklenen AI Sağlayıcıları: Google Gemini (gemini-3.8-flash), Groq, OpenRouter, .\n\nRoblox Studio objeleri oluşturabilir, Luau script yazabilir, dosyaları yönetebilir ve sorularınızı yanıtlayabilirim.",
 	})
 	views.chat = chat
 
